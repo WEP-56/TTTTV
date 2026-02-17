@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { apiClient } from '../api/client';
-import type { VodItem, SearchResult } from '../types';
+import type { VodItem } from '../types';
 
 export const useSearchStore = defineStore('search', () => {
   const keyword = ref('');

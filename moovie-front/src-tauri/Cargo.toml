@@ -1,7 +1,7 @@
 [package]
-name = "moovie-front"
-version = "0.1.0"
-description = "Moovie - 影视聚合服务"
+name = "ttttv-front"
+version = "1.0.0"
+description = "TTTTV - 影视聚合服务"
 authors = ["you"]
 edition = "2021"
 

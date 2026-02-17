@@ -13,11 +13,14 @@
     "isolatedModules": true,
     "noEmit": true,
 
+    /* Vue support */
+    "jsx": "preserve",
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
 }
