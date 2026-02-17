@@ -1,7 +1,10 @@
 # TTTTV
 
 Windows 端，Win11 原生软件风格的聚合全网资源的影视搜索、观看器。
- 界面演示：[BiliBili专栏](https://www.bilibili.com/opus/1170268044355698696)
+
+![TTTTV Logo](./logo.png)
+
+界面演示：[BiliBili专栏](https://www.bilibili.com/opus/1170268044355698696)
 
 ## 特性
 
@@ -52,6 +55,14 @@ npm run tauri dev
 ```bash
 npm run tauri build
 ```
+
+### 打包发布
+
+构建完成后，会在 `moovie-front/src-tauri/target/release/bundle/` 目录下生成：
+- **MSI 安装包** - 带有安装向导的 Windows 安装程序
+- **可执行文件** - 直接运行的 .exe 文件
+
+可以直接运行这些文件进行测试或发布。
 
 ## 版权声明
 
