@@ -21,9 +21,23 @@ Windows 端，Win11 原生软件风格的聚合全网资源的影视搜索、观
 ## 技术栈
 
 - **前端** - Vue 3 + TypeScript + Element Plus
-- **后端** - Rust + Axum
-- **桌面框架** - Tauri 2.0
+- **后端** - Rust + Axum (独立服务器)
+- **桌面框架** - Tauri 2.0 (前端容器)
 - **播放器** - Hls.js
+
+## 项目结构
+
+```
+TTTTV/
+├── Moovie/              # 后端服务器 (完整功能)
+│   ├── config/          # 资源站配置
+│   ├── src/             # 后端源码
+│   └── Cargo.toml
+└── moovie-front/        # 前端 (Tauri)
+    ├── src/             # 前端源码
+    ├── src-tauri/       # Tauri 容器
+    └── package.json
+```
 
 ## 快速开始
 
@@ -45,24 +59,55 @@ npm install
 
 ### 开发模式
 
+**重要：需要同时运行两个程序！**
+
+1. **启动后端服务器** (新终端)
 ```bash
-# 在项目根目录
+cd Moovie
+cargo run
+```
+后端将运行在 http://127.0.0.1:5007
+
+2. **启动前端** (另一个新终端)
+```bash
+cd moovie-front
 npm run tauri dev
 ```
 
 ### 构建
 
+#### 1. 构建后端
 ```bash
+cd Moovie
+cargo build --release
+```
+后端可执行文件位置：`Moovie/target/release/moovie.exe`
+
+#### 2. 构建前端 (Tauri)
+```bash
+cd moovie-front
 npm run tauri build
 ```
+前端安装包位置：`moovie-front/src-tauri/target/release/bundle/msi/`
 
 ### 打包发布
 
-构建完成后，会在 `moovie-front/src-tauri/target/release/bundle/` 目录下生成：
-- **MSI 安装包** - 带有安装向导的 Windows 安装程序
-- **可执行文件** - 直接运行的 .exe 文件
+#### 方式一：同时分发两个文件 (推荐)
+构建完成后，需要同时提供以下两个文件：
+1. **后端服务器**：`Moovie/target/release/moovie.exe`
+2. **前端安装包**：`moovie-front/src-tauri/target/release/bundle/msi/*.msi`
 
-可以直接运行这些文件进行测试或发布。
+**使用说明**：
+1. 用户需要先运行 `moovie.exe` (保持后台运行)
+2. 然后安装并运行 TTTTV 前端
+
+#### 方式二：手动打包在一起
+1. 将 `Moovie/target/release/moovie.exe` 和 `config/` 文件夹复制到一个目录
+2. 可以创建一个启动脚本同时启动后端和前端
+
+**重要**：`config/sources.json` 必须和后端可执行文件在同一目录下！
+
+---
 
 ## 版权声明
 
