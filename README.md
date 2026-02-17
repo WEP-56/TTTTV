@@ -92,20 +92,35 @@ npm run tauri build
 
 ### 打包发布
 
-#### 方式一：同时分发两个文件 (推荐)
-构建完成后，需要同时提供以下两个文件：
-1. **后端服务器**：`Moovie/target/release/moovie.exe`
-2. **前端安装包**：`moovie-front/src-tauri/target/release/bundle/msi/*.msi`
+#### 最终打包方式（开箱即用）
 
-**使用说明**：
-1. 用户需要先运行 `moovie.exe` (保持后台运行)
-2. 然后安装并运行 TTTTV 前端
+**重要：后端和前端需要放在同一个目录下！**
 
-#### 方式二：手动打包在一起
-1. 将 `Moovie/target/release/moovie.exe` 和 `config/` 文件夹复制到一个目录
-2. 可以创建一个启动脚本同时启动后端和前端
+1. **构建后端**
+```bash
+cd Moovie
+cargo build --release
+```
+从 `Moovie/target/release/` 复制 `moovie.exe`（或 `ttttv.exe`）
 
-**重要**：`config/sources.json` 必须和后端可执行文件在同一目录下！
+2. **构建前端**
+```bash
+cd moovie-front
+npm run tauri build
+```
+从 `moovie-front/src-tauri/target/release/bundle/msi/` 获取安装包，或者从 `moovie-front/src-tauri/target/release/` 获取直接运行的 exe
+
+3. **打包在一起**
+创建一个文件夹，包含以下内容：
+```
+TTTTV/
+├── ttttv.exe          (前端，从 Tauri 的 release 目录获取)
+├── moovie.exe         (后端，从 Moovie/target/release/ 复制，并重命名为 ttttv_backend.exe 或保持原名)
+└── config/            (从 Moovie/ 复制整个 config 文件夹)
+    └── sources.json
+```
+
+**现在用户只需要运行 ttttv.exe 就可以了！前端会自动启动后端！**
 
 ---
 
