@@ -1,5 +1,5 @@
 [package]
-name = "ttttv"
+name = "moovie"
 version = "1.0.0"
 edition = "2024"
 
@@ -30,3 +30,4 @@ async-trait = "0.1"
 tower-http = { version = "0.5", features = ["cors"] }
 urlencoding = "2"
 rand = "0.8"
+directories = "6.0.0"

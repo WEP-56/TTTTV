@@ -1,9 +1,10 @@
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_shell::ShellExt;
+use tauri_plugin_shell::process::CommandChild;
 
 struct AppState {
-    backend_process: Mutex<Option<std::process::Child>>,
+    backend_process: Mutex<Option<CommandChild>>,
 }
 
 #[tauri::command]
@@ -14,6 +15,7 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
         .manage(AppState {
@@ -30,43 +32,19 @@ pub fn run() {
             let app_handle = app.app_handle().clone();
             
             tauri::async_runtime::spawn(async move {
-                let exe_path = std::env::current_exe().ok();
-                let exe_dir = exe_path.and_then(|p| p.parent().map(|p| p.to_path_buf()));
-                
-                let backend_exe = if let Some(dir) = exe_dir {
-                    let candidate = dir.join("ttttv.exe");
-                    if candidate.exists() {
-                        candidate
-                    } else {
-                        dir.join("moovie.exe")
-                    }
-                } else {
-                    std::path::PathBuf::from("ttttv.exe")
-                };
-
-                if backend_exe.exists() {
-                    let config_dir = backend_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let working_dir = if config_dir.join("config").exists() {
-                        config_dir.to_path_buf()
-                    } else {
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    };
-
-                    match Command::new(&backend_exe)
-                        .current_dir(&working_dir)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            let state = app_handle.state::<AppState>();
-                            let mut backend = state.backend_process.lock().unwrap();
-                            *backend = Some(child);
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to start backend: {}", e);
+                match app_handle.shell().sidecar("moovie") {
+                    Ok(command) => {
+                        match command.spawn() {
+                            Ok((_rx, child)) => {
+                                let state = app_handle.state::<AppState>();
+                                let mut backend = state.backend_process.lock().unwrap();
+                                *backend = Some(child);
+                                println!("Backend sidecar started successfully");
+                            }
+                            Err(e) => eprintln!("Failed to spawn backend sidecar: {}", e),
                         }
                     }
+                    Err(e) => eprintln!("Failed to create sidecar command: {}", e),
                 }
             });
 
@@ -77,7 +55,7 @@ pub fn run() {
                 let app_handle = window.app_handle();
                 let state = app_handle.state::<AppState>();
                 let mut backend = state.backend_process.lock().unwrap();
-                if let Some(mut child) = backend.take() {
+                if let Some(child) = backend.take() {
                     let _ = child.kill();
                 }
             }

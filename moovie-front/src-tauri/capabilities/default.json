@@ -11,6 +11,16 @@
     "core:window:allow-unmaximize",
     "core:window:allow-close",
     "core:window:allow-is-maximized",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "moovie",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
