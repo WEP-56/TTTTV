@@ -49,3 +49,5 @@ logs/
 .env
 .env.local
 .env.*.local
+.codinggirl
+opencode.json
