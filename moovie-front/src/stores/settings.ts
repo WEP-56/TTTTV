@@ -56,6 +56,7 @@ export const useSettingsStore = defineStore('settings', () => {
     detail: string;
     group?: string;
     r18?: boolean;
+    comment?: string;
   }) {
     addingSource.value = true;
     try {

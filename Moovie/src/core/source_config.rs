@@ -45,7 +45,7 @@ impl SourceConfig {
                 id: None,
                 key: key.clone(),
                 base_url: api_site.api.clone(),
-                enabled: api_site.enabled || !api_site.name.contains("🔞"),
+                enabled: api_site.enabled,
             })
             .collect()
     }

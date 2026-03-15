@@ -23,6 +23,32 @@ export interface SiteWithStatus {
   group?: string;
 }
 
+export interface RemoteSource {
+  key: string;
+  name: string;
+  api: string;
+  detail: string;
+  group?: string;
+  r18?: boolean;
+  comment?: string;
+}
+
+export interface RemoteSourcesResponse {
+  url: string;
+  sources: RemoteSource[];
+}
+
+export interface AddSourcesBatchFailure {
+  key: string;
+  error: string;
+}
+
+export interface AddSourcesBatchResult {
+  added: string[];
+  skipped_existing: string[];
+  failed: AddSourcesBatchFailure[];
+}
+
 export interface SearchResult {
   items: VodItem[];
   filtered_count: number;

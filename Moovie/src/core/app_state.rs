@@ -3,6 +3,7 @@ use crate::models::Site;
 use crate::core::storage::{LocalStorage, SiteState};
 use crate::core::source_config::{SourceConfig, ApiSite};
 use crate::api::sources::AddSourceRequest;
+use crate::api::sources::{AddSourcesBatchFailure, AddSourcesBatchResult};
 use std::sync::{Arc, Mutex};
 use reqwest::Client;
 use std::path::PathBuf;
@@ -118,15 +119,23 @@ impl AppState {
         }
 
         let api_url = request.api.clone();
+        let is_r18 = request.r18.unwrap_or(false);
+        let group = request.group.unwrap_or_else(|| {
+            if is_r18 {
+                "R18".to_string()
+            } else {
+                "自定义".to_string()
+            }
+        });
         
         let api_site = ApiSite {
             name: request.name,
             api: request.api,
             detail: request.detail,
             enabled: true,
-            r18: request.r18.unwrap_or(false),
-            group: request.group.unwrap_or_else(|| "自定义".to_string()),
-            comment: Some("自定义添加".to_string()),
+            r18: is_r18,
+            group,
+            comment: request.comment.or_else(|| Some("自定义添加".to_string())),
         };
 
         source_config.api_site.insert(request.key.clone(), api_site);
@@ -145,6 +154,70 @@ impl AppState {
         self.save_source_config(&source_config)?;
 
         Ok(())
+    }
+
+    pub fn add_custom_sources_batch(
+        &self,
+        requests: Vec<AddSourceRequest>,
+    ) -> Result<AddSourcesBatchResult> {
+        let mut source_config = self.source_config.lock().unwrap();
+        let mut sites = self.sites.lock().unwrap();
+
+        let mut result = AddSourcesBatchResult {
+            added: Vec::new(),
+            skipped_existing: Vec::new(),
+            failed: Vec::new(),
+        };
+
+        for request in requests {
+            if request.key.trim().is_empty() {
+                result.failed.push(AddSourcesBatchFailure {
+                    key: request.key,
+                    error: "key 不能为空".to_string(),
+                });
+                continue;
+            }
+
+            if source_config.api_site.contains_key(&request.key) {
+                result.skipped_existing.push(request.key);
+                continue;
+            }
+
+            let api_url = request.api.clone();
+            let is_r18 = request.r18.unwrap_or(false);
+            let group = request.group.unwrap_or_else(|| {
+                if is_r18 {
+                    "R18".to_string()
+                } else {
+                    "自定义".to_string()
+                }
+            });
+            let api_site = ApiSite {
+                name: request.name,
+                api: request.api,
+                detail: request.detail,
+                enabled: true,
+                r18: is_r18,
+                group,
+                comment: request.comment,
+            };
+
+            source_config.api_site.insert(request.key.clone(), api_site);
+
+            sites.push(Site {
+                id: None,
+                key: request.key.clone(),
+                base_url: api_url,
+                enabled: true,
+            });
+
+            result.added.push(request.key);
+        }
+
+        self.search_service.update_sites(sites.clone());
+        self.save_source_config(&source_config)?;
+
+        Ok(result)
     }
 
     pub fn delete_custom_source(&self, key: &str) -> Result<()> {

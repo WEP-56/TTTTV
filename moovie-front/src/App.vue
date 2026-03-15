@@ -218,9 +218,9 @@
             <el-button type="primary" @click="handleRetry" class="retry-button">重试</el-button>
           </div>
 
-          <div v-else-if="searchStore.results.length > 0" class="results-area">
+          <div v-else-if="visibleSearchResults.length > 0" class="results-area">
             <div class="results-header">
-              <span class="results-count">{{ searchStore.results.length }} 个结果</span>
+              <span class="results-count">{{ visibleSearchResults.length }} 个结果</span>
               <span v-if="searchStore.filteredCount > 0" class="filtered-badge">
                 已过滤 {{ searchStore.filteredCount }} 条版权内容
               </span>
@@ -228,7 +228,7 @@
 
             <div class="video-grid">
               <div 
-                v-for="item in searchStore.results" 
+                v-for="item in visibleSearchResults" 
                 :key="`${item.source_key}-${item.vod_id}`"
                 class="video-item"
                 @click="handleSelectItem(item)"
@@ -252,6 +252,15 @@
                 </div>
               </div>
             </div>
+          </div>
+
+          <div v-else-if="searchStore.results.length > 0" class="empty-area">
+            <div class="empty-icon">
+              <el-icon :size="64"><VideoCamera /></el-icon>
+            </div>
+            <span class="empty-text">
+              当前已隐藏 R18 相关结果，可在设置中开启“显示 R18”
+            </span>
           </div>
 
           <div v-else class="empty-area">
@@ -307,6 +316,13 @@
             <el-radio-button value="system">跟随系统</el-radio-button>
           </el-radio-group>
         </div>
+        <div class="setting-item">
+          <span class="setting-label">显示 R18</span>
+          <el-switch
+            :model-value="appSettingsStore.settings.showR18"
+            @change="handleShowR18Change"
+          />
+        </div>
 
         <div class="settings-section" style="margin-top: 24px;">
           <h3 class="section-title">资源站管理</h3>
@@ -315,14 +331,18 @@
               <el-icon><Refresh /></el-icon>
               刷新
             </el-button>
-            <el-button type="primary" @click="showAddCustomSource = true">
+            <el-button type="primary" @click="openRemoteSourcesDialog">
+              <el-icon><Download /></el-icon>
+              扫描远程仓库
+            </el-button>
+            <el-button @click="showAddCustomSource = true">
               <el-icon><Plus /></el-icon>
               添加自定义源
             </el-button>
           </div>
         </div>
         
-        <div v-for="group in settingsStore.groups" :key="group.name" class="source-group">
+        <div v-for="group in visibleGroups" :key="group.name" class="source-group">
           <div class="group-header">
             <span class="group-name">{{ group.name }}</span>
             <span class="group-count">{{ group.sites.length }} 个</span>
@@ -350,6 +370,18 @@
               </template>
             </el-table-column>
             <el-table-column prop="comment" label="备注" show-overflow-tooltip />
+            <el-table-column label="操作" width="90" align="center">
+              <template #default="{ row }">
+                <el-button
+                  type="danger"
+                  text
+                  :loading="deletingSourceKey === row.key"
+                  @click="handleDeleteSource(row)"
+                >
+                  删除
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
@@ -379,6 +411,12 @@
     >
       <div class="custom-source-form">
         <el-form label-width="80px">
+          <el-form-item label="标识">
+            <el-input
+              v-model="newCustomSource.key"
+              placeholder="example.com（留空将自动从 API 提取）"
+            />
+          </el-form-item>
           <el-form-item label="名称">
             <el-input v-model="newCustomSource.name" placeholder="资源站名称" />
           </el-form-item>
@@ -388,6 +426,15 @@
           <el-form-item label="详情页">
             <el-input v-model="newCustomSource.detail" placeholder="https://example.com" />
           </el-form-item>
+          <el-form-item label="分组">
+            <el-input v-model="newCustomSource.group" placeholder="可选，例如：影视 / 动漫 / 综艺 / R18" />
+          </el-form-item>
+          <el-form-item label="R18">
+            <el-switch v-model="newCustomSource.r18" />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="newCustomSource.comment" placeholder="可选" />
+          </el-form-item>
         </el-form>
       </div>
       <template #footer>
@@ -395,19 +442,88 @@
         <el-button type="primary" @click="saveCustomSource">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="showAddRemoteSources"
+      title="从远程仓库添加资源站"
+      width="860px"
+      class="remote-sources-dialog"
+      :close-on-click-modal="false"
+    >
+      <div class="remote-sources-toolbar">
+        <el-input
+          v-model="remoteKeyword"
+          placeholder="搜索 key / 名称 / 分组 / 备注"
+          clearable
+        />
+        <el-tag v-if="!appSettingsStore.settings.showR18" type="info" size="small" style="margin-left: 12px;">
+          R18 已隐藏
+        </el-tag>
+        <el-button @click="scanRemoteSources" :loading="remoteSourcesLoading" style="margin-left: 12px;">
+          <el-icon><Refresh /></el-icon>
+          扫描
+        </el-button>
+      </div>
+
+      <div v-if="remoteSourcesUrl" class="remote-sources-meta">
+        <span>来源: {{ remoteSourcesUrl }}</span>
+        <span style="margin-left: 12px;">共 {{ filteredRemoteSources.length }} 个</span>
+      </div>
+
+      <el-table
+        ref="remoteTableRef"
+        :data="filteredRemoteSources"
+        style="width: 100%"
+        max-height="420"
+        class="sites-table"
+        @selection-change="remoteSelected = $event"
+      >
+        <el-table-column type="selection" width="55" :selectable="isRemoteRowSelectable" />
+        <el-table-column prop="name" label="资源站" width="220" />
+        <el-table-column prop="key" label="标识" width="160" />
+        <el-table-column prop="group" label="分组" width="110" />
+        <el-table-column label="类型" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.r18" type="danger" size="small">R18</el-tag>
+            <el-tag v-else type="success" size="small">普通</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="comment" label="备注" show-overflow-tooltip />
+        <el-table-column label="状态" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.alreadyAdded" type="info" size="small">已添加</el-tag>
+            <el-tag v-else type="warning" size="small">可添加</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <el-button @click="showAddRemoteSources = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="addingRemoteSources"
+          :disabled="remoteSelected.length === 0"
+          @click="confirmAddRemoteSources"
+        >
+          添加所选 ({{ remoteSelected.length }})
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, WarningFilled, VideoPlay, Refresh, VideoCamera, Clock, Star, ArrowLeft, Plus, Delete } from '@element-plus/icons-vue';
+import { Search, WarningFilled, VideoPlay, Refresh, VideoCamera, Clock, Star, ArrowLeft, Plus, Delete, Download } from '@element-plus/icons-vue';
 import { useSearchStore } from './stores/search';
 import { useSettingsStore } from './stores/settings';
 import { useThemeStore } from './stores/theme';
+import { useAppSettingsStore } from './stores/appSettings';
 import { useHistoryStore } from './stores/history';
 import { useFavoritesStore } from './stores/favorites';
 import { useRecommendationStore } from './stores/recommendation';
+import { apiClient } from './api/client';
 import ThemeToggle from './components/ThemeToggle.vue';
 import WatchHistory from './components/WatchHistory.vue';
 import Favorites from './components/Favorites.vue';
@@ -416,13 +532,14 @@ import SmartRecommendations from './components/SmartRecommendations.vue';
 import VideoDetail from './components/VideoDetail.vue';
 import DirectPlayer from './components/DirectPlayer.vue';
 import About from './components/About.vue';
-import type { VodItem } from './types';
+import type { VodItem, RemoteSource } from './types';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSearchHistoryStore } from './stores/searchHistory';
 
 const searchStore = useSearchStore();
 const settingsStore = useSettingsStore();
 const themeStore = useThemeStore();
+const appSettingsStore = useAppSettingsStore();
 const historyStore = useHistoryStore();
 const favoritesStore = useFavoritesStore();
 const recStore = useRecommendationStore();
@@ -431,6 +548,7 @@ const searchHistoryStore = useSearchHistoryStore();
 const searchQuery = ref('');
 const showSettings = ref(false);
 const showAddCustomSource = ref(false);
+const showAddRemoteSources = ref(false);
 const activeNav = ref('home');
 const isMaximized = ref(false);
 const isTauri = window.__TAURI__ !== undefined;
@@ -438,9 +556,89 @@ const currentVideo = ref<VodItem | null>(null);
 const showVideoDetail = ref(false);
 
 const newCustomSource = ref({
+  key: '',
   name: '',
   api: '',
   detail: '',
+  group: '',
+  r18: false,
+  comment: '',
+});
+
+type RemoteSourceRow = RemoteSource & { alreadyAdded: boolean };
+
+const remoteSourcesLoading = ref(false);
+const addingRemoteSources = ref(false);
+const remoteSourcesUrl = ref('');
+const remoteKeyword = ref('');
+const remoteSources = ref<RemoteSource[]>([]);
+const remoteSelected = ref<RemoteSourceRow[]>([]);
+const remoteTableRef = ref<any>(null);
+const deletingSourceKey = ref<string | null>(null);
+
+const visibleGroups = computed(() => {
+  if (appSettingsStore.settings.showR18) return settingsStore.groups;
+
+  return settingsStore.groups
+    .map((g: any) => ({
+      ...g,
+      sites: g.sites.filter((s: any) => !s.r18),
+    }))
+    .filter((g: any) => g.sites.length > 0);
+});
+
+const r18SourceKeySet = computed(() => {
+  const set = new Set<string>();
+  for (const site of settingsStore.sites) {
+    if (site.r18) set.add(site.key);
+  }
+  return set;
+});
+
+const visibleSearchResults = computed(() => {
+  if (appSettingsStore.settings.showR18) return searchStore.results;
+  const r18Keys = r18SourceKeySet.value;
+  return searchStore.results.filter((item) => !r18Keys.has(item.source_key));
+});
+
+const existingSourceKeySet = computed(() => {
+  const set = new Set<string>();
+  for (const site of settingsStore.sites) {
+    set.add(site.key);
+  }
+  return set;
+});
+
+const remoteSourceRows = computed<RemoteSourceRow[]>(() => {
+  const existing = existingSourceKeySet.value;
+  return remoteSources.value.map((s) => ({
+    ...s,
+    alreadyAdded: existing.has(s.key),
+  }));
+});
+
+const filteredRemoteSources = computed<RemoteSourceRow[]>(() => {
+  const keyword = remoteKeyword.value.trim().toLowerCase();
+  return remoteSourceRows.value
+    .filter((s) => appSettingsStore.settings.showR18 || !s.r18)
+    .filter((s) => {
+      if (!keyword) return true;
+      return (
+        s.key.toLowerCase().includes(keyword) ||
+        s.name.toLowerCase().includes(keyword) ||
+        (s.group || '').toLowerCase().includes(keyword) ||
+        (s.comment || '').toLowerCase().includes(keyword)
+      );
+    })
+    .sort((a, b) => Number(a.alreadyAdded) - Number(b.alreadyAdded));
+});
+
+watch(showAddRemoteSources, (open) => {
+  if (!open) {
+    remoteKeyword.value = '';
+    remoteSelected.value = [];
+    remoteTableRef.value?.clearSelection?.();
+  }
 });
 
 const placeholderImage = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22600%22%3E%3Crect fill=%22%23f3f3f3%22 width=%22400%22 height=%22600%22/%3E%3Ctext x=%22200%22 y=%22300%22 fill=%22%234cc2ff%22 font-size=%2248%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E🎬%3C/text%3E%3C/svg%3E';
@@ -576,16 +774,172 @@ async function handleToggleSite(site: any) {
   ElMessage.success(site.enabled ? '已启用该资源站' : '已禁用该资源站');
 }
 
-function saveCustomSource() {
-  if (!newCustomSource.value.name || !newCustomSource.value.api) {
+async function handleDeleteSource(site: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除资源站「${site.name}」吗？删除后可通过“扫描远程仓库”重新添加。`,
+      '删除资源站',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    );
+
+    deletingSourceKey.value = site.key;
+    const ok = await settingsStore.deleteCustomSource(site.key);
+    if (ok) {
+      ElMessage.success('已删除该资源站');
+    } else {
+      ElMessage.error('删除资源站失败');
+    }
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('删除资源站失败:', error);
+      ElMessage.error('删除资源站失败');
+    }
+  } finally {
+    deletingSourceKey.value = null;
+  }
+}
+
+async function handleShowR18Change(value: boolean) {
+  if (!value) {
+    appSettingsStore.setShowR18(false);
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      '开启后将显示并允许添加 R18 资源站与相关内容。请确认你已年满 18 周岁，并遵守当地法律法规。',
+      'R18 提示',
+      {
+        confirmButtonText: '我已了解',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    );
+    appSettingsStore.setShowR18(true);
+  } catch (error) {
+    appSettingsStore.setShowR18(false);
+  }
+}
+
+function openRemoteSourcesDialog() {
+  showAddRemoteSources.value = true;
+  if (remoteSources.value.length === 0) {
+    scanRemoteSources();
+  }
+}
+
+function getApiErrorMessage(err: any): string {
+  return (
+    err?.response?.data?.error ||
+    err?.response?.data?.message ||
+    err?.message ||
+    '未知错误'
+  );
+}
+
+async function scanRemoteSources() {
+  remoteSourcesLoading.value = true;
+  try {
+    const res = await apiClient.getRemoteSources();
+    if (res.success && res.data) {
+      remoteSourcesUrl.value = res.data.url;
+      remoteSources.value = res.data.sources || [];
+      remoteSelected.value = [];
+      remoteTableRef.value?.clearSelection?.();
+      if (remoteSources.value.length === 0) {
+        ElMessage.warning('远程仓库未返回任何资源站配置');
+      }
+      return;
+    }
+    ElMessage.error(res.error || res.message || '扫描远程仓库失败');
+  } catch (err) {
+    console.error('扫描远程仓库失败', err);
+    ElMessage.error(`扫描远程仓库失败：${getApiErrorMessage(err)}`);
+  } finally {
+    remoteSourcesLoading.value = false;
+  }
+}
+
+function isRemoteRowSelectable(row: RemoteSourceRow) {
+  return !row.alreadyAdded;
+}
+
+async function confirmAddRemoteSources() {
+  if (remoteSelected.value.length === 0) return;
+
+  addingRemoteSources.value = true;
+  try {
+    const payload: RemoteSource[] = remoteSelected.value.map(({ alreadyAdded, ...s }) => s);
+    const res = await apiClient.addSourcesBatch(payload);
+
+    if (res.success && res.data) {
+      const { added, skipped_existing, failed } = res.data;
+      if ((failed?.length || 0) === 0) {
+        ElMessage.success(`已添加 ${added.length} 个资源站${skipped_existing.length ? `，跳过 ${skipped_existing.length} 个已存在` : ''}`);
+      } else {
+        ElMessage.warning(`已添加 ${added.length} 个，失败 ${failed.length} 个${skipped_existing.length ? `，跳过 ${skipped_existing.length} 个已存在` : ''}`);
+      }
+      await settingsStore.loadSites();
+      showAddRemoteSources.value = false;
+      return;
+    }
+
+    ElMessage.error(res.error || res.message || '添加资源站失败');
+  } catch (err) {
+    console.error('添加远程资源站失败', err);
+    ElMessage.error(`添加失败：${getApiErrorMessage(err)}`);
+  } finally {
+    addingRemoteSources.value = false;
+  }
+}
+
+function buildSourceKey(inputKey: string, apiUrl: string): string {
+  const key = (inputKey || '').trim();
+  if (key) return key;
+  try {
+    return new URL(apiUrl).hostname;
+  } catch {
+    return (apiUrl || '').trim();
+  }
+}
+
+async function saveCustomSource() {
+  const key = buildSourceKey(newCustomSource.value.key, newCustomSource.value.api);
+
+  if (!key || !newCustomSource.value.name || !newCustomSource.value.api) {
     ElMessage.warning('请填写完整信息');
     return;
   }
-  
-  settingsStore.addCustomSource(newCustomSource.value);
-  newCustomSource.value = { name: '', api: '', detail: '' };
-  showAddCustomSource.value = false;
-  ElMessage.success('自定义源添加成功');
+
+  const ok = await settingsStore.addCustomSource({
+    key,
+    name: newCustomSource.value.name.trim(),
+    api: newCustomSource.value.api.trim(),
+    detail: newCustomSource.value.detail.trim(),
+    group: newCustomSource.value.group.trim() || undefined,
+    r18: newCustomSource.value.r18 || undefined,
+    comment: newCustomSource.value.comment.trim() || undefined,
+  });
+
+  if (ok) {
+    newCustomSource.value = {
+      key: '',
+      name: '',
+      api: '',
+      detail: '',
+      group: '',
+      r18: false,
+      comment: '',
+    };
+    showAddCustomSource.value = false;
+    ElMessage.success('自定义源添加成功');
+  } else {
+    ElMessage.error('自定义源添加失败');
+  }
 }
 
 async function clearCache() {
