@@ -35,10 +35,38 @@ pub struct FavoriteItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveHistoryItem {
+    pub platform: String,
+    pub room_id: String,
+    pub title: String,
+    pub cover: Option<String>,
+    pub user_name: Option<String>,
+    pub user_avatar: Option<String>,
+    pub last_watch_time: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveFavoriteItem {
+    pub platform: String,
+    pub room_id: String,
+    pub title: String,
+    pub cover: Option<String>,
+    pub user_name: Option<String>,
+    pub user_avatar: Option<String>,
+    pub created_time: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageData {
     pub site_states: HashMap<String, SiteState>,
     pub watch_history: Vec<WatchHistoryItem>,
     pub favorites: Vec<FavoriteItem>,
+    #[serde(default)]
+    pub live_history: Vec<LiveHistoryItem>,
+    #[serde(default)]
+    pub live_favorites: Vec<LiveFavoriteItem>,
+    #[serde(default)]
+    pub live_cookies: HashMap<String, String>,
 }
 
 impl Default for StorageData {
@@ -47,6 +75,9 @@ impl Default for StorageData {
             site_states: HashMap::new(),
             watch_history: Vec::new(),
             favorites: Vec::new(),
+            live_history: Vec::new(),
+            live_favorites: Vec::new(),
+            live_cookies: HashMap::new(),
         }
     }
 }
@@ -142,5 +173,74 @@ impl LocalStorage {
 
     pub fn get_favorites(&self) -> &[FavoriteItem] {
         &self.data.favorites
+    }
+
+    pub fn add_live_history(&mut self, item: LiveHistoryItem) -> Result<()> {
+        self.data
+            .live_history
+            .retain(|h| h.platform != item.platform || h.room_id != item.room_id);
+        self.data.live_history.insert(0, item);
+        self.data.live_history.truncate(200);
+        self.save()
+    }
+
+    pub fn remove_live_history(&mut self, platform: &str, room_id: &str) -> Result<()> {
+        self.data
+            .live_history
+            .retain(|h| h.platform != platform || h.room_id != room_id);
+        self.save()
+    }
+
+    pub fn clear_live_history(&mut self) -> Result<()> {
+        self.data.live_history.clear();
+        self.save()
+    }
+
+    pub fn get_live_history(&self) -> &[LiveHistoryItem] {
+        &self.data.live_history
+    }
+
+    pub fn add_live_favorite(&mut self, item: LiveFavoriteItem) -> Result<()> {
+        self.data
+            .live_favorites
+            .retain(|f| f.platform != item.platform || f.room_id != item.room_id);
+        self.data.live_favorites.insert(0, item);
+        self.save()
+    }
+
+    pub fn remove_live_favorite(&mut self, platform: &str, room_id: &str) -> Result<()> {
+        self.data
+            .live_favorites
+            .retain(|f| f.platform != platform || f.room_id != room_id);
+        self.save()
+    }
+
+    pub fn clear_live_favorites(&mut self) -> Result<()> {
+        self.data.live_favorites.clear();
+        self.save()
+    }
+
+    pub fn is_live_favorited(&self, platform: &str, room_id: &str) -> bool {
+        self.data
+            .live_favorites
+            .iter()
+            .any(|f| f.platform == platform && f.room_id == room_id)
+    }
+
+    pub fn get_live_favorites(&self) -> &[LiveFavoriteItem] {
+        &self.data.live_favorites
+    }
+
+    pub fn get_live_cookie(&self, platform: &str) -> Option<String> {
+        self.data.live_cookies.get(platform).cloned()
+    }
+
+    pub fn set_live_cookie(&mut self, platform: &str, cookie: String) -> Result<()> {
+        if cookie.trim().is_empty() {
+            self.data.live_cookies.remove(platform);
+        } else {
+            self.data.live_cookies.insert(platform.to_string(), cookie);
+        }
+        self.save()
     }
 }

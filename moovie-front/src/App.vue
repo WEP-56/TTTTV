@@ -287,6 +287,10 @@
           <Favorites @select="handleFavoriteSelect" />
         </div>
 
+        <div v-else-if="activeNav === 'live'" class="page">
+          <LivePage />
+        </div>
+
         <div v-else-if="activeNav === 'player'" class="page">
           <DirectPlayer />
         </div>
@@ -322,6 +326,45 @@
             :model-value="appSettingsStore.settings.showR18"
             @change="handleShowR18Change"
           />
+        </div>
+
+        <div class="settings-section" style="margin-top: 24px;">
+          <h3 class="section-title">直播</h3>
+        </div>
+        <div class="setting-item">
+          <span class="setting-label">B站扫码登录</span>
+          <div class="setting-control">
+            <el-tag v-if="biliLoggedIn" type="success" size="small">已登录</el-tag>
+            <el-tag v-else type="info" size="small">未登录</el-tag>
+            <el-button
+              v-if="biliLoggedIn"
+              type="danger"
+              text
+              :loading="biliLogoutLoading"
+              @click="handleBiliLogout"
+            >
+              退出登录
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              :loading="biliQrLoading"
+              @click="handleBiliGetQrCode"
+            >
+              获取二维码
+            </el-button>
+            <el-button :loading="biliStatusLoading" @click="refreshBilibiliAuthStatus">刷新状态</el-button>
+          </div>
+        </div>
+        <div v-if="!biliLoggedIn && biliQrSvg" class="bili-qrcode-row">
+          <div class="bili-qrcode" v-html="biliQrSvg"></div>
+          <div class="bili-qrcode-meta">
+            <div class="bili-qrcode-status">
+              <el-tag v-if="biliQrStatusText" :type="biliQrStatusTagType" size="small">{{ biliQrStatusText }}</el-tag>
+              <span class="bili-qrcode-message">{{ biliQrMessage || '请使用哔哩哔哩 App 扫码登录' }}</span>
+            </div>
+            <div class="bili-qrcode-tip">提示：Cookie 将以明文存储在本地，仅用于获取更高画质。</div>
+          </div>
         </div>
 
         <div class="settings-section" style="margin-top: 24px;">
@@ -513,7 +556,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, WarningFilled, VideoPlay, Refresh, VideoCamera, Clock, Star, ArrowLeft, Plus, Delete, Download } from '@element-plus/icons-vue';
 import { useSearchStore } from './stores/search';
@@ -532,6 +575,7 @@ import SmartRecommendations from './components/SmartRecommendations.vue';
 import VideoDetail from './components/VideoDetail.vue';
 import DirectPlayer from './components/DirectPlayer.vue';
 import About from './components/About.vue';
+import LivePage from './components/LivePage.vue';
 import type { VodItem, RemoteSource } from './types';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSearchHistoryStore } from './stores/searchHistory';
@@ -575,6 +619,50 @@ const remoteSources = ref<RemoteSource[]>([]);
 const remoteSelected = ref<RemoteSourceRow[]>([]);
 const remoteTableRef = ref<any>(null);
 const deletingSourceKey = ref<string | null>(null);
+
+const biliStatusLoading = ref(false);
+const biliLogoutLoading = ref(false);
+const biliQrLoading = ref(false);
+const biliLoggedIn = ref(false);
+const biliQrSvg = ref('');
+const biliQrKey = ref('');
+const biliQrMessage = ref('');
+const biliQrStatus = ref('');
+let biliQrPollTimer: number | null = null;
+let biliQrPollInFlight = false;
+
+const biliQrStatusText = computed(() => {
+  switch (biliQrStatus.value) {
+    case 'unscanned':
+      return '等待扫码';
+    case 'scanned':
+      return '已扫码，等待确认';
+    case 'expired':
+      return '二维码已过期';
+    case 'failed':
+      return '登录失败';
+    case 'success':
+      return '登录成功';
+    default:
+      return '';
+  }
+});
+
+const biliQrStatusTagType = computed(() => {
+  switch (biliQrStatus.value) {
+    case 'success':
+      return 'success';
+    case 'expired':
+      return 'warning';
+    case 'failed':
+      return 'danger';
+    case 'scanned':
+      return 'warning';
+    case 'unscanned':
+    default:
+      return 'info';
+  }
+});
 
 const visibleGroups = computed(() => {
   if (appSettingsStore.settings.showR18) return settingsStore.groups;
@@ -641,11 +729,25 @@ watch(showAddRemoteSources, (open) => {
   }
 });
 
+watch(showSettings, (open) => {
+  if (open) {
+    refreshBilibiliAuthStatus();
+    return;
+  }
+  stopBilibiliQrPolling();
+  resetBilibiliQr();
+});
+
+onBeforeUnmount(() => {
+  stopBilibiliQrPolling();
+});
+
 const placeholderImage = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22600%22%3E%3Crect fill=%22%23f3f3f3%22 width=%22400%22 height=%22600%22/%3E%3Ctext x=%22200%22 y=%22300%22 fill=%22%234cc2ff%22 font-size=%2248%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E🎬%3C/text%3E%3C/svg%3E';
 
 const navItems = [
   { id: 'home', icon: '🏠', label: '发现' },
   { id: 'search', icon: '🔍', label: '搜索' },
+  { id: 'live', icon: '📺', label: '直播' },
   { id: 'player', icon: '🎬', label: 'M3U8' },
   { id: 'history', icon: '⏱️', label: '历史' },
   { id: 'favorites', icon: '⭐', label: '收藏' },
@@ -839,6 +941,131 @@ function getApiErrorMessage(err: any): string {
     err?.message ||
     '未知错误'
   );
+}
+
+function resetBilibiliQr() {
+  biliQrSvg.value = '';
+  biliQrKey.value = '';
+  biliQrStatus.value = '';
+  biliQrMessage.value = '';
+}
+
+function stopBilibiliQrPolling() {
+  if (biliQrPollTimer != null) {
+    window.clearInterval(biliQrPollTimer);
+    biliQrPollTimer = null;
+  }
+  biliQrPollInFlight = false;
+}
+
+function startBilibiliQrPolling() {
+  stopBilibiliQrPolling();
+  biliQrPollTimer = window.setInterval(pollBilibiliQrCodeOnce, 3000);
+  pollBilibiliQrCodeOnce();
+}
+
+async function refreshBilibiliAuthStatus() {
+  biliStatusLoading.value = true;
+  try {
+    const res = await apiClient.bilibiliAuthStatus();
+    if (res.success && res.data) {
+      biliLoggedIn.value = !!res.data.logged_in;
+      if (biliLoggedIn.value) {
+        stopBilibiliQrPolling();
+        resetBilibiliQr();
+      }
+      return;
+    }
+    ElMessage.error(res.error || res.message || '获取 B站登录状态失败');
+  } catch (err) {
+    console.error('获取 B站登录状态失败', err);
+    ElMessage.error(`获取 B站登录状态失败：${getApiErrorMessage(err)}`);
+  } finally {
+    biliStatusLoading.value = false;
+  }
+}
+
+async function handleBiliLogout() {
+  biliLogoutLoading.value = true;
+  try {
+    const res = await apiClient.bilibiliLogout();
+    if (res.success) {
+      biliLoggedIn.value = false;
+      stopBilibiliQrPolling();
+      resetBilibiliQr();
+      ElMessage.success('已退出登录');
+      return;
+    }
+    ElMessage.error(res.error || res.message || '退出登录失败');
+  } catch (err) {
+    console.error('退出 B站登录失败', err);
+    ElMessage.error(`退出登录失败：${getApiErrorMessage(err)}`);
+  } finally {
+    biliLogoutLoading.value = false;
+  }
+}
+
+async function handleBiliGetQrCode() {
+  if (biliQrLoading.value) return;
+  biliQrLoading.value = true;
+  try {
+    stopBilibiliQrPolling();
+    resetBilibiliQr();
+    const res = await apiClient.bilibiliQrCode();
+    if (res.success && res.data) {
+      biliQrSvg.value = res.data.svg;
+      biliQrKey.value = res.data.qrcode_key;
+      biliQrStatus.value = 'unscanned';
+      biliQrMessage.value = '';
+      startBilibiliQrPolling();
+      return;
+    }
+    ElMessage.error(res.error || res.message || '获取二维码失败');
+  } catch (err) {
+    console.error('获取 B站二维码失败', err);
+    ElMessage.error(`获取二维码失败：${getApiErrorMessage(err)}`);
+  } finally {
+    biliQrLoading.value = false;
+  }
+}
+
+async function pollBilibiliQrCodeOnce() {
+  const key = biliQrKey.value.trim();
+  if (!key) return;
+  if (biliQrPollInFlight) return;
+  biliQrPollInFlight = true;
+  try {
+    const res = await apiClient.bilibiliQrPoll(key);
+    if (res.success && res.data) {
+      biliQrStatus.value = res.data.status;
+      biliQrMessage.value = res.data.message || '';
+
+      if (res.data.status === 'success') {
+        stopBilibiliQrPolling();
+        ElMessage.success('B站登录成功');
+        await refreshBilibiliAuthStatus();
+        return;
+      }
+
+      if (res.data.status === 'expired') {
+        stopBilibiliQrPolling();
+        ElMessage.warning('二维码已过期，请重新获取');
+      } else if (res.data.status === 'failed') {
+        stopBilibiliQrPolling();
+        ElMessage.error(res.data.message || '二维码登录失败');
+      }
+      return;
+    }
+
+    stopBilibiliQrPolling();
+    ElMessage.error(res.error || res.message || '二维码状态查询失败');
+  } catch (err) {
+    console.error('查询 B站二维码状态失败', err);
+    stopBilibiliQrPolling();
+    ElMessage.error(`二维码状态查询失败：${getApiErrorMessage(err)}`);
+  } finally {
+    biliQrPollInFlight = false;
+  }
 }
 
 async function scanRemoteSources() {
@@ -1652,6 +1879,63 @@ body {
   font-size: 14px;
   transition: color 0.3s ease;
   color: var(--el-text-color-regular);
+}
+
+.setting-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bili-qrcode-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 8px 0 12px;
+}
+
+.bili-qrcode {
+  width: 240px;
+  height: 240px;
+  padding: 8px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--el-border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.bili-qrcode :deep(svg) {
+  width: 100%;
+  height: 100%;
+}
+
+.bili-qrcode-meta {
+  width: 320px;
+  padding-top: 6px;
+}
+
+.bili-qrcode-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bili-qrcode-message {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.bili-qrcode-tip {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--el-text-color-secondary);
 }
 
 .section-actions {

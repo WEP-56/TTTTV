@@ -1,5 +1,6 @@
 mod api;
 mod core;
+mod live;
 mod models;
 mod services;
 mod utils;
@@ -144,6 +145,7 @@ async fn main() {
         .route("/api/detail", get(api::search::get_detail))
         .route("/api/play/parse", get(api::play::parse_play_url))
         .nest("/api/sources", api::sources::router())
+        .nest("/api/live", api::live::router())
         .nest("/api/history", api::history::router())
         .nest("/api/favorites", api::favorites::router())
         .route("/api/douban/search", get(api::douban::douban_search))

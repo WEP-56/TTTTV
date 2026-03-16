@@ -49,6 +49,101 @@ export interface AddSourcesBatchResult {
   failed: AddSourcesBatchFailure[];
 }
 
+export interface LivePlatformInfo {
+  id: string;
+  name: string;
+}
+
+export interface LiveRoomItem {
+  platform: string;
+  room_id: string;
+  title: string;
+  cover: string;
+  user_name: string;
+  online: number;
+}
+
+export interface LiveRoomDetail {
+  platform: string;
+  room_id: string;
+  title: string;
+  cover: string;
+  user_name: string;
+  user_avatar: string;
+  online: number;
+  introduction?: string;
+  notice?: string;
+  status: boolean;
+  is_record: boolean;
+  url: string;
+  show_time?: string;
+}
+
+export interface LivePlayQuality {
+  id: string;
+  name: string;
+  sort: number;
+}
+
+export interface LivePlayUrl {
+  urls: string[];
+  headers?: Record<string, string>;
+  url_type?: string;
+  expires_at?: number;
+}
+
+export interface LiveHistoryItem {
+  platform: string;
+  room_id: string;
+  title: string;
+  cover?: string;
+  user_name?: string;
+  user_avatar?: string;
+  last_watch_time: number;
+}
+
+export interface LiveFavoriteItem {
+  platform: string;
+  room_id: string;
+  title: string;
+  cover?: string;
+  user_name?: string;
+  user_avatar?: string;
+  created_time: number;
+}
+
+export interface LiveMessageColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export type LiveMessageType = 'chat' | 'gift' | 'online' | 'superChat';
+
+export interface LiveMessage {
+  type: LiveMessageType;
+  user_name: string;
+  message: string;
+  color: LiveMessageColor;
+  data?: any;
+}
+
+export interface BilibiliAuthStatusResponse {
+  logged_in: boolean;
+}
+
+export interface BilibiliQrCodeResponse {
+  qrcode_key: string;
+  url: string;
+  svg: string;
+}
+
+export interface BilibiliQrPollResponse {
+  code: number;
+  status: string;
+  message: string;
+}
+
 export interface SearchResult {
   items: VodItem[];
   filtered_count: number;

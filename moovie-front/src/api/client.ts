@@ -7,6 +7,16 @@ import type {
   RemoteSourcesResponse,
   RemoteSource,
   AddSourcesBatchResult,
+  LivePlatformInfo,
+  LiveRoomItem,
+  LiveRoomDetail,
+  LivePlayQuality,
+  LivePlayUrl,
+  LiveFavoriteItem,
+  LiveHistoryItem,
+  BilibiliAuthStatusResponse,
+  BilibiliQrCodeResponse,
+  BilibiliQrPollResponse,
 } from '../types';
 
 const API_BASE = 'http://127.0.0.1:5007';
@@ -140,6 +150,121 @@ export const apiClient = {
     limit?: string;
   }): Promise<ApiResponse<DoubanSearchResponse>> {
     const res = await api.get('/api/douban/chart', { params });
+    return res.data;
+  },
+
+  async getLivePlatforms(): Promise<ApiResponse<LivePlatformInfo[]>> {
+    const res = await api.get('/api/live/platforms');
+    return res.data;
+  },
+
+  async liveRecommend(platform: string, page = 1): Promise<ApiResponse<LiveRoomItem[]>> {
+    const res = await api.get(`/api/live/${platform}/recommend`, { params: { page } });
+    return res.data;
+  },
+
+  async liveSearch(platform: string, kw: string, page = 1): Promise<ApiResponse<LiveRoomItem[]>> {
+    const res = await api.get(`/api/live/${platform}/search`, { params: { kw, page } });
+    return res.data;
+  },
+
+  async liveRoomDetail(platform: string, roomId: string): Promise<ApiResponse<LiveRoomDetail>> {
+    const res = await api.get(`/api/live/${platform}/room/detail`, { params: { room_id: roomId } });
+    return res.data;
+  },
+
+  async liveQualities(platform: string, roomId: string): Promise<ApiResponse<LivePlayQuality[]>> {
+    const res = await api.get(`/api/live/${platform}/room/qualities`, { params: { room_id: roomId } });
+    return res.data;
+  },
+
+  async livePlay(
+    platform: string,
+    roomId: string,
+    qualityId: string
+  ): Promise<ApiResponse<LivePlayUrl>> {
+    const res = await api.get(`/api/live/${platform}/room/play`, {
+      params: { room_id: roomId, quality_id: qualityId },
+    });
+    return res.data;
+  },
+
+  async getLiveFavorites(): Promise<ApiResponse<LiveFavoriteItem[]>> {
+    const res = await api.get('/api/live/favorites');
+    return res.data;
+  },
+
+  async addLiveFavorite(payload: {
+    platform: string;
+    room_id: string;
+    title: string;
+    cover?: string;
+    user_name?: string;
+    user_avatar?: string;
+  }): Promise<ApiResponse<void>> {
+    const res = await api.post('/api/live/favorites', payload);
+    return res.data;
+  },
+
+  async deleteLiveFavorite(params: { platform: string; room_id: string }): Promise<ApiResponse<void>> {
+    const res = await api.delete('/api/live/favorites', { params });
+    return res.data;
+  },
+
+  async checkLiveFavorite(params: { platform: string; room_id: string }): Promise<ApiResponse<{ is_favorited: boolean }>> {
+    const res = await api.get('/api/live/favorites/check', { params });
+    return res.data;
+  },
+
+  async clearLiveFavorites(): Promise<ApiResponse<void>> {
+    const res = await api.delete('/api/live/favorites/clear');
+    return res.data;
+  },
+
+  async getLiveHistory(): Promise<ApiResponse<LiveHistoryItem[]>> {
+    const res = await api.get('/api/live/history');
+    return res.data;
+  },
+
+  async addLiveHistory(payload: {
+    platform: string;
+    room_id: string;
+    title: string;
+    cover?: string;
+    user_name?: string;
+    user_avatar?: string;
+  }): Promise<ApiResponse<void>> {
+    const res = await api.post('/api/live/history', payload);
+    return res.data;
+  },
+
+  async deleteLiveHistory(params: { platform: string; room_id: string }): Promise<ApiResponse<void>> {
+    const res = await api.delete('/api/live/history', { params });
+    return res.data;
+  },
+
+  async clearLiveHistory(): Promise<ApiResponse<void>> {
+    const res = await api.delete('/api/live/history/clear');
+    return res.data;
+  },
+
+  async bilibiliAuthStatus(): Promise<ApiResponse<BilibiliAuthStatusResponse>> {
+    const res = await api.get('/api/live/auth/bilibili/status');
+    return res.data;
+  },
+
+  async bilibiliLogout(): Promise<ApiResponse<void>> {
+    const res = await api.post('/api/live/auth/bilibili/logout');
+    return res.data;
+  },
+
+  async bilibiliQrCode(): Promise<ApiResponse<BilibiliQrCodeResponse>> {
+    const res = await api.get('/api/live/auth/bilibili/qrcode');
+    return res.data;
+  },
+
+  async bilibiliQrPoll(qrcodeKey: string): Promise<ApiResponse<BilibiliQrPollResponse>> {
+    const res = await api.get('/api/live/auth/bilibili/qrcode/poll', { params: { qrcode_key: qrcodeKey } });
     return res.data;
   },
 };
