@@ -72,23 +72,34 @@ impl HuyaProvider {
         format!("https://{}", u.trim_start_matches('/'))
     }
 
-    fn process_anticode(anticode: &str, uid: &str, streamname: &str) -> Result<String> {
-        // Ported from dart_simple_live (HuyaSite.processAnticode)
-        let params: HashMap<String, String> = url::form_urlencoded::parse(anticode.as_bytes())
+    fn md5_hex(input: &str) -> String {
+        let mut hasher = Md5::new();
+        hasher.update(input.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn current_millis() -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+
+    fn process_anticode(anticode: &str, streamname: &str) -> Result<String> {
+        // Generate "web" anti-code params (ported from DTV-main). Hardcoded/outdated
+        // sv/sdk_sid often results in 403 for stream playlists.
+        let sanitized = anticode.replace("&amp;", "&");
+        let trimmed = sanitized.trim_start_matches(|c| c == '?' || c == '&');
+        let params: HashMap<String, String> = url::form_urlencoded::parse(trimmed.as_bytes())
             .into_owned()
             .collect();
 
         let fm_raw = params.get("fm").cloned().unwrap_or_default();
+        let ctype = params
+            .get("ctype")
+            .cloned()
+            .unwrap_or_else(|| "tars_mobile".to_string());
         let fs = params.get("fs").cloned().unwrap_or_default();
         if fm_raw.trim().is_empty() || fs.trim().is_empty() {
             return Err(MoovieError::DetailError("虎牙 anticode 缺少 fm/fs".to_string()));
         }
-
-        let t = "103";
-        let ctype = "tars_mobile";
-        let ws_time = format!("{:x}", chrono::Utc::now().timestamp() + 21600);
-        let uid_num: i64 = uid.parse().unwrap_or(0);
-        let seq_id = (chrono::Utc::now().timestamp_millis() + uid_num).to_string();
 
         // Some decoders turn '+' into space; restore it for base64.
         let fm_b64 = fm_raw.replace(' ', "+");
@@ -101,38 +112,41 @@ impl HuyaProvider {
             return Err(MoovieError::DetailError("虎牙 wsSecretPrefix 为空".to_string()));
         }
 
-        let ws_secret_hash = {
-            let mut hasher = Md5::new();
-            hasher.update(format!("{}|{}|{}", seq_id, ctype, t).as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
+        use rand::Rng;
 
-        let ws_secret = {
-            let secret_str = format!(
-                "{}_{}_{}_{}_{}",
-                ws_secret_prefix, uid, streamname, ws_secret_hash, ws_time
-            );
-            let mut hasher = Md5::new();
-            hasher.update(secret_str.as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
+        let t = 100_i64;
+        let sv = 2403051612_i64;
+        let t13 = Self::current_millis();
+        let sdk_sid = t13;
 
-        let uuid = Self::gen_uuid();
+        let mut rng = rand::thread_rng();
+        let u = rng.gen_range(1_400_000_000_000_i64..=1_400_009_999_999_i64);
+        let seq_id = u + sdk_sid;
+
+        let ws_time = format!("{:x}", (t13 + 110_624) / 1000);
+
+        let uuid_seed = (t13 % 10_000_000_000_i64) * 1000 + rng.gen_range(0_i64..1_000_i64);
+        let uuid = uuid_seed % 4_294_967_295_i64;
+
+        let ws_secret_hash = Self::md5_hex(&format!("{}|{}|{}", seq_id, ctype, t));
+        let ws_secret = Self::md5_hex(&format!(
+            "{}_{}_{}_{}_{}",
+            ws_secret_prefix, u, streamname, ws_secret_hash, ws_time
+        ));
+
         let pairs = [
             ("wsSecret", ws_secret),
             ("wsTime", ws_time),
-            ("seqid", seq_id),
-            ("ctype", ctype.to_string()),
+            ("seqid", seq_id.to_string()),
+            ("ctype", ctype),
             ("ver", "1".to_string()),
             ("fs", fs),
-            ("dMod", "mseh-0".to_string()),
-            ("sdkPcdn", "1_1".to_string()),
-            ("uid", uid.to_string()),
-            ("uuid", uuid),
+            ("uuid", uuid.to_string()),
+            ("u", u.to_string()),
             ("t", t.to_string()),
-            ("sv", "202411221719".to_string()),
-            ("sdk_sid", "1732862566708".to_string()),
-            ("a_block", "0".to_string()),
+            ("sv", sv.to_string()),
+            ("sdk_sid", sdk_sid.to_string()),
+            ("codec", "264".to_string()),
         ];
 
         Ok(pairs
@@ -482,16 +496,21 @@ impl LiveProvider for HuyaProvider {
     async fn play_urls(&self, _room_id: &str, _quality_id: &str) -> Result<LivePlayUrl> {
         let (obj, _top_sid, _sub_sid) = self.get_room_info_raw(_room_id).await?;
 
-        let uid = Self::gen_numeric_uid(13);
         let ratio = _quality_id.parse::<i32>().unwrap_or(0);
 
         let mut urls = Vec::new();
         let lines = Self::parse_stream_lines(&obj);
         for line in lines {
-            let anti = Self::process_anticode(&line.anticode, &uid, &line.stream_name)?;
+            let anti = Self::process_anticode(&line.anticode, &line.stream_name)?;
             let base = Self::normalize_line_url(&line.base_url);
             let ext = if line.is_hls { "m3u8" } else { "flv" };
-            let mut url = format!("{}/{}.{}?{}&codec=264", base.trim_end_matches('/'), line.stream_name, ext, anti);
+            let mut url = format!(
+                "{}/{}.{}?{}",
+                base.trim_end_matches('/'),
+                line.stream_name,
+                ext,
+                anti
+            );
             if ratio > 0 {
                 url.push_str(&format!("&ratio={}", ratio));
             }

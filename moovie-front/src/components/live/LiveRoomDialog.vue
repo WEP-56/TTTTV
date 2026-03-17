@@ -258,6 +258,10 @@ async function updateSrcFromLine() {
     return;
   }
 
+  // Use backend proxy to apply required headers and to rewrite m3u8 segment/key URLs.
+  currentSrc.value = liveStore.toProxyUrl(props.platform, url);
+  return;
+
   // 斗鱼和虎牙需要通过本地代理服务器
   if (props.platform === 'douyu' || props.platform === 'huya') {
     try {

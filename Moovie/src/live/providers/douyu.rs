@@ -174,6 +174,19 @@ impl DouyuProvider {
         let mut out = Vec::new();
         let data = &json["data"];
 
+        // Prefer the explicit HLS fields if present.
+        let hls_url = data["hls_url"].as_str().unwrap_or("").trim();
+        let hls_live = data["hls_live"].as_str().unwrap_or("").trim();
+        if !hls_url.is_empty() && !hls_live.is_empty() {
+            let live = Self::html_unescape(hls_live);
+            let base_url = if hls_url.ends_with('/') {
+                format!("{}{}", hls_url, live)
+            } else {
+                format!("{}/{}", hls_url, live)
+            };
+            out.push(base_url);
+        }
+
         let rtmp_url = data["rtmp_url"].as_str().unwrap_or("").trim();
         let rtmp_live = data["rtmp_live"].as_str().unwrap_or("").trim();
 
@@ -184,6 +197,8 @@ impl DouyuProvider {
             } else {
                 format!("{}/{}", rtmp_url, live)
             };
+
+            // Douyu H5 API typically returns HTTP-FLV; keep it and let the frontend player handle FLV via MSE.
 
             // 只添加原始 URL，不生成变体
             out.push(base_url);
@@ -424,7 +439,13 @@ impl LiveProvider for DouyuProvider {
             sign
         );
         let meta = self.post_h5_play(&detail.room_id, &meta_args).await?;
-        let cdns = Self::parse_cdns(&meta);
+        let mut cdns = Self::parse_cdns(&meta);
+        // Some rooms return only one CDN. Probe a few common CDNs to offer fallback lines.
+        for cdn in ["ws-h5", "tct-h5", "ali-h5", "hs-h5"] {
+            if !cdns.iter().any(|c| c == cdn) {
+                cdns.push(cdn.to_string());
+            }
+        }
 
         let mut urls = Vec::new();
         for cdn in cdns {
@@ -432,13 +453,18 @@ impl LiveProvider for DouyuProvider {
                 "{}&cdn={}&rate={}&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0",
                 sign, cdn, quality_id
             );
-            let json = self.post_h5_play(&detail.room_id, &args).await?;
-            urls.extend(Self::collect_play_urls(&json));
+            match self.post_h5_play(&detail.room_id, &args).await {
+                Ok(json) => urls.extend(Self::collect_play_urls(&json)),
+                Err(_) => continue,
+            }
         }
 
         if urls.is_empty() {
             return Err(MoovieError::DetailError("斗鱼未获取到播放地址".to_string()));
         }
+
+        urls.sort();
+        urls.dedup();
 
         Ok(LivePlayUrl {
             urls,

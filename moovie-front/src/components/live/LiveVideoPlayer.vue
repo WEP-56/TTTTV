@@ -11,6 +11,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import Hls from 'hls.js';
+import flvjs from 'flv.js';
 
 const props = withDefaults(
   defineProps<{
@@ -24,6 +25,7 @@ const props = withDefaults(
 
 const videoEl = ref<HTMLVideoElement | null>(null);
 let hls: Hls | null = null;
+let flv: flvjs.Player | null = null;
 
 function destroyHls() {
   if (hls) {
@@ -32,11 +34,19 @@ function destroyHls() {
   }
 }
 
+function destroyFlv() {
+  if (flv) {
+    flv.destroy();
+    flv = null;
+  }
+}
+
 function load() {
   const video = videoEl.value;
   if (!video) return;
 
   destroyHls();
+  destroyFlv();
 
   if (!props.src) {
     video.removeAttribute('src');
@@ -54,6 +64,21 @@ function load() {
     });
     hls.loadSource(props.src);
     hls.attachMedia(video);
+  } else if (props.src.includes('.flv') && flvjs.isSupported()) {
+    flv = flvjs.createPlayer(
+      {
+        type: 'flv',
+        url: props.src,
+        isLive: true,
+      },
+      {
+        // Disable transmuxing worker to avoid bundler/worker incompatibilities in some runtimes.
+        enableWorker: false,
+        stashInitialSize: 128,
+      },
+    );
+    flv.attachMediaElement(video);
+    flv.load();
   } else {
     video.src = props.src;
   }
@@ -72,7 +97,10 @@ watch(
 );
 
 onMounted(() => load());
-onUnmounted(() => destroyHls());
+onUnmounted(() => {
+  destroyHls();
+  destroyFlv();
+});
 </script>
 
 <style scoped>
@@ -83,4 +111,3 @@ onUnmounted(() => destroyHls());
   object-fit: contain;
 }
 </style>
-
