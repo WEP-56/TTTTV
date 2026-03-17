@@ -4,6 +4,7 @@ use crate::core::storage::{LocalStorage, SiteState};
 use crate::core::source_config::{SourceConfig, ApiSite};
 use crate::api::sources::AddSourceRequest;
 use crate::api::sources::{AddSourcesBatchFailure, AddSourcesBatchResult};
+use crate::proxy::{StreamUrlStore, ProxyServerHandle};
 use std::sync::{Arc, Mutex};
 use reqwest::Client;
 use std::path::PathBuf;
@@ -17,6 +18,8 @@ pub struct AppState {
     pub storage: Arc<Mutex<LocalStorage>>,
     pub sites: Arc<Mutex<Vec<Site>>>,
     pub client: Client,
+    pub stream_url_store: StreamUrlStore,
+    pub proxy_server_handle: Arc<Mutex<Option<actix_web::dev::ServerHandle>>>,
     config_path: PathBuf,
 }
 
@@ -60,6 +63,8 @@ impl AppState {
             storage: Arc::new(Mutex::new(storage)),
             sites: Arc::new(Mutex::new(sites)),
             client,
+            stream_url_store: StreamUrlStore::default(),
+            proxy_server_handle: Arc::new(Mutex::new(None)),
             config_path,
         }
     }

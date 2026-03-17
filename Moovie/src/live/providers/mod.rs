@@ -6,6 +6,8 @@ use super::models::{LivePlayQuality, LivePlayUrl, LiveRoomDetail, LiveRoomItem};
 pub mod bilibili;
 pub mod douyu;
 pub mod huya;
+pub mod douyin;
+mod douyin_abogus_native;
 
 #[async_trait]
 pub trait LiveProvider: Send + Sync {

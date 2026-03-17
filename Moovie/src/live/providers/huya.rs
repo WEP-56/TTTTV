@@ -1,6 +1,9 @@
 use async_trait::async_trait;
+use base64::Engine;
+use md5::{Digest, Md5};
 use regex::Regex;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::utils::error::{MoovieError, Result};
 use super::super::models::{LivePlayQuality, LivePlayUrl, LiveRoomDetail, LiveRoomItem};
@@ -8,6 +11,21 @@ use super::LiveProvider;
 
 pub struct HuyaProvider {
     client: reqwest::Client,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HuyaDanmakuArgs {
+    pub ayyuid: i64,
+    pub top_sid: i64,
+    pub sub_sid: i64,
+}
+
+#[derive(Debug, Clone)]
+struct HuyaStreamLine {
+    base_url: String,
+    stream_name: String,
+    anticode: String,
+    is_hls: bool,
 }
 
 impl HuyaProvider {
@@ -20,6 +38,110 @@ impl HuyaProvider {
         "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36"
     }
 
+    fn play_user_agent() -> &'static str {
+        // from dart_simple_live (HuyaSite.HYSDK_UA)
+        "HYSDK(Windows, 30000002)_APP(pc_exe&7060000&official)_SDK(trans&2.32.3.5646)"
+    }
+
+    fn gen_numeric_uid(len: usize) -> String {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..len)
+            .map(|_| char::from(b'0' + (rng.gen_range(0..10) as u8)))
+            .collect()
+    }
+
+    fn gen_uuid() -> String {
+        // from dart_simple_live (HuyaSite.getUUid)
+        use rand::Rng;
+        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+        let random_value: u64 = rand::thread_rng().gen_range(0..=0xffffffff);
+        let result = ((current_time % 10_000_000_000) * 1000 + random_value) % 0xffffffff;
+        result.to_string()
+    }
+
+    fn normalize_line_url(url: &str) -> String {
+        let u = url.trim();
+        if u.starts_with("//") {
+            return format!("https:{}", u);
+        }
+        if u.starts_with("http://") || u.starts_with("https://") {
+            return u.to_string();
+        }
+        // best-effort
+        format!("https://{}", u.trim_start_matches('/'))
+    }
+
+    fn process_anticode(anticode: &str, uid: &str, streamname: &str) -> Result<String> {
+        // Ported from dart_simple_live (HuyaSite.processAnticode)
+        let params: HashMap<String, String> = url::form_urlencoded::parse(anticode.as_bytes())
+            .into_owned()
+            .collect();
+
+        let fm_raw = params.get("fm").cloned().unwrap_or_default();
+        let fs = params.get("fs").cloned().unwrap_or_default();
+        if fm_raw.trim().is_empty() || fs.trim().is_empty() {
+            return Err(MoovieError::DetailError("虎牙 anticode 缺少 fm/fs".to_string()));
+        }
+
+        let t = "103";
+        let ctype = "tars_mobile";
+        let ws_time = format!("{:x}", chrono::Utc::now().timestamp() + 21600);
+        let uid_num: i64 = uid.parse().unwrap_or(0);
+        let seq_id = (chrono::Utc::now().timestamp_millis() + uid_num).to_string();
+
+        // Some decoders turn '+' into space; restore it for base64.
+        let fm_b64 = fm_raw.replace(' ', "+");
+        let fm_bytes = base64::engine::general_purpose::STANDARD
+            .decode(fm_b64.as_bytes())
+            .map_err(|e| MoovieError::DetailError(format!("虎牙 fm base64 解码失败: {}", e)))?;
+        let fm_text = String::from_utf8_lossy(&fm_bytes);
+        let ws_secret_prefix = fm_text.split('_').next().unwrap_or("").to_string();
+        if ws_secret_prefix.trim().is_empty() {
+            return Err(MoovieError::DetailError("虎牙 wsSecretPrefix 为空".to_string()));
+        }
+
+        let ws_secret_hash = {
+            let mut hasher = Md5::new();
+            hasher.update(format!("{}|{}|{}", seq_id, ctype, t).as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let ws_secret = {
+            let secret_str = format!(
+                "{}_{}_{}_{}_{}",
+                ws_secret_prefix, uid, streamname, ws_secret_hash, ws_time
+            );
+            let mut hasher = Md5::new();
+            hasher.update(secret_str.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let uuid = Self::gen_uuid();
+        let pairs = [
+            ("wsSecret", ws_secret),
+            ("wsTime", ws_time),
+            ("seqid", seq_id),
+            ("ctype", ctype.to_string()),
+            ("ver", "1".to_string()),
+            ("fs", fs),
+            ("dMod", "mseh-0".to_string()),
+            ("sdkPcdn", "1_1".to_string()),
+            ("uid", uid.to_string()),
+            ("uuid", uuid),
+            ("t", t.to_string()),
+            ("sv", "202411221719".to_string()),
+            ("sdk_sid", "1732862566708".to_string()),
+            ("a_block", "0".to_string()),
+        ];
+
+        Ok(pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
+            .collect::<Vec<_>>()
+            .join("&"))
+    }
+
     async fn get_room_info_raw(&self, room_id: &str) -> Result<(Value, i64, i64)> {
         let html = self
             .client
@@ -30,15 +152,22 @@ impl HuyaProvider {
             .text()
             .await?;
 
-        let re = Regex::new(r"window\.HNF_GLOBAL_INIT\s*=\s*(\{[\s\S]*?\})[\s\S]*?</script>")
-            .map_err(|e| MoovieError::ConfigError(e.to_string()))?;
-        let caps = re
-            .captures(&html)
+        let idx = html
+            .find("window.HNF_GLOBAL_INIT")
             .ok_or_else(|| MoovieError::DetailError("虎牙房间页面解析失败".to_string()))?;
-        let mut json_text = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
+        let after = &html[idx..];
+        let brace_idx = after
+            .find('{')
+            .ok_or_else(|| MoovieError::DetailError("虎牙房间页面解析失败".to_string()))?;
+        let json_start = idx + brace_idx;
+        let end_tag = html[json_start..]
+            .find("</script>")
+            .ok_or_else(|| MoovieError::DetailError("虎牙房间页面解析失败".to_string()))?;
+        let json_end = json_start + end_tag;
+        let mut json_text = html[json_start..json_end].trim().to_string();
+        if json_text.ends_with(';') {
+            json_text.pop();
+        }
 
         // remove function bodies that break JSON parsing
         let func_re = Regex::new(r"function.*?\(.*?\).*?\{[\s\S]*?\}")
@@ -64,6 +193,60 @@ impl HuyaProvider {
             .unwrap_or(0);
 
         Ok((obj, top_sid, sub_sid))
+    }
+
+    pub(crate) async fn get_danmaku_args(&self, room_id: &str) -> Result<HuyaDanmakuArgs> {
+        let (obj, top_sid, sub_sid) = self.get_room_info_raw(room_id).await?;
+        let ayyuid = obj["roomInfo"]["tLiveInfo"]["lYyid"]
+            .as_i64()
+            .or_else(|| obj["roomInfo"]["tProfileInfo"]["lYyid"].as_i64())
+            .unwrap_or(0);
+
+        Ok(HuyaDanmakuArgs {
+            ayyuid,
+            top_sid,
+            sub_sid,
+        })
+    }
+
+    fn parse_stream_lines(obj: &Value) -> Vec<HuyaStreamLine> {
+        let mut out = Vec::new();
+        let lines = obj["roomInfo"]["tLiveInfo"]["tLiveStreamInfo"]["vStreamInfo"]["value"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        for item in lines {
+            let stream_name = item["sStreamName"].as_str().unwrap_or("").trim().to_string();
+            if stream_name.is_empty() {
+                continue;
+            }
+
+            // Prefer HLS if present
+            let hls_url = item["sHlsUrl"].as_str().unwrap_or("").trim().to_string();
+            let hls_code = item["sHlsAntiCode"].as_str().unwrap_or("").trim().to_string();
+            if !hls_url.is_empty() && !hls_code.is_empty() {
+                out.push(HuyaStreamLine {
+                    base_url: hls_url,
+                    stream_name: stream_name.clone(),
+                    anticode: hls_code,
+                    is_hls: true,
+                });
+            }
+
+            let flv_url = item["sFlvUrl"].as_str().unwrap_or("").trim().to_string();
+            let flv_code = item["sFlvAntiCode"].as_str().unwrap_or("").trim().to_string();
+            if !flv_url.is_empty() && !flv_code.is_empty() {
+                out.push(HuyaStreamLine {
+                    base_url: flv_url,
+                    stream_name: stream_name.clone(),
+                    anticode: flv_code,
+                    is_hls: false,
+                });
+            }
+        }
+
+        out
     }
 }
 
@@ -108,17 +291,32 @@ impl LiveProvider for HuyaProvider {
             if title.trim().is_empty() {
                 title = item["roomName"].as_str().unwrap_or("").to_string();
             }
-            items.push(LiveRoomItem {
-                platform: self.id().to_string(),
-                room_id: item["profileRoom"].as_i64().unwrap_or(0).to_string(),
-                title,
-                cover,
-                user_name: item["nick"].as_str().unwrap_or("").to_string(),
-                online: item["totalCount"]
-                    .as_i64()
-                    .or_else(|| item["totalCount"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0),
-            });
+
+            let profile_room = item["profileRoom"]
+                .as_i64()
+                .or_else(|| item["profileRoom"].as_str().and_then(|s| s.parse().ok()))
+                .filter(|&id| id > 0)
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    item["privateHost"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                });
+
+            if let Some(room_id) = profile_room {
+                items.push(LiveRoomItem {
+                    platform: self.id().to_string(),
+                    room_id,
+                    title,
+                    cover,
+                    user_name: item["nick"].as_str().unwrap_or("").to_string(),
+                    online: item["totalCount"]
+                        .as_i64()
+                        .or_else(|| item["totalCount"].as_str().and_then(|s| s.parse().ok()))
+                        .unwrap_or(0),
+                });
+            }
         }
 
         Ok(items)
@@ -169,17 +367,25 @@ impl LiveProvider for HuyaProvider {
                 title = item["game_roomName"].as_str().unwrap_or("").to_string();
             }
 
-            items.push(LiveRoomItem {
-                platform: self.id().to_string(),
-                room_id: item["room_id"].as_i64().unwrap_or(0).to_string(),
-                title,
-                cover,
-                user_name: item["game_nick"].as_str().unwrap_or("").to_string(),
-                online: item["game_total_count"]
-                    .as_i64()
-                    .or_else(|| item["game_total_count"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0),
-            });
+            let room_id = item["room_id"]
+                .as_i64()
+                .or_else(|| item["room_id"].as_str().and_then(|s| s.parse().ok()))
+                .filter(|&id| id > 0)
+                .map(|id| id.to_string());
+
+            if let Some(room_id) = room_id {
+                items.push(LiveRoomItem {
+                    platform: self.id().to_string(),
+                    room_id,
+                    title,
+                    cover,
+                    user_name: item["game_nick"].as_str().unwrap_or("").to_string(),
+                    online: item["game_total_count"]
+                        .as_i64()
+                        .or_else(|| item["game_total_count"].as_str().and_then(|s| s.parse().ok()))
+                        .unwrap_or(0),
+                });
+            }
         }
 
         Ok(items)
@@ -205,8 +411,9 @@ impl LiveProvider for HuyaProvider {
         let profile_room = t_live["lProfileRoom"]
             .as_i64()
             .or_else(|| t_live["lProfileRoom"].as_str().and_then(|s| s.parse().ok()))
-            .unwrap_or_else(|| room_id.parse::<i64>().unwrap_or(0))
-            .to_string();
+            .filter(|&id| id > 0)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| room_id.to_string());
 
         let user_name = t_profile["sNick"].as_str().unwrap_or("").to_string();
         let user_avatar = t_profile["sAvatar180"].as_str().unwrap_or("").to_string();
@@ -232,15 +439,84 @@ impl LiveProvider for HuyaProvider {
     }
 
     async fn play_qualities(&self, _room_id: &str) -> Result<Vec<LivePlayQuality>> {
-        Err(MoovieError::InvalidParameter(
-            "虎牙播放与画质选择开发中".to_string(),
-        ))
+        let (obj, _top_sid, _sub_sid) = self.get_room_info_raw(_room_id).await?;
+        let mut qualities = Vec::new();
+
+        let list = obj["roomInfo"]["tLiveInfo"]["tLiveStreamInfo"]["vBitRateInfo"]["value"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for item in list {
+            let name = item["sDisplayName"].as_str().unwrap_or("").to_string();
+            if name.contains("HDR") {
+                continue;
+            }
+            let bit_rate = item["iBitRate"]
+                .as_i64()
+                .or_else(|| item["iBitRate"].as_str().and_then(|s| s.parse().ok()))
+                .unwrap_or(0);
+            qualities.push(LivePlayQuality {
+                id: bit_rate.to_string(),
+                name: if name.trim().is_empty() { "原画".to_string() } else { name },
+                sort: bit_rate as i32,
+            });
+        }
+
+        if qualities.is_empty() {
+            qualities.push(LivePlayQuality {
+                id: "0".to_string(),
+                name: "原画".to_string(),
+                sort: 0,
+            });
+            qualities.push(LivePlayQuality {
+                id: "2000".to_string(),
+                name: "高清".to_string(),
+                sort: 2000,
+            });
+        }
+
+        qualities.sort_by(|a, b| b.sort.cmp(&a.sort));
+        Ok(qualities)
     }
 
     async fn play_urls(&self, _room_id: &str, _quality_id: &str) -> Result<LivePlayUrl> {
-        Err(MoovieError::InvalidParameter(
-            "虎牙播放与画质选择开发中".to_string(),
-        ))
+        let (obj, _top_sid, _sub_sid) = self.get_room_info_raw(_room_id).await?;
+
+        let uid = Self::gen_numeric_uid(13);
+        let ratio = _quality_id.parse::<i32>().unwrap_or(0);
+
+        let mut urls = Vec::new();
+        let lines = Self::parse_stream_lines(&obj);
+        for line in lines {
+            let anti = Self::process_anticode(&line.anticode, &uid, &line.stream_name)?;
+            let base = Self::normalize_line_url(&line.base_url);
+            let ext = if line.is_hls { "m3u8" } else { "flv" };
+            let mut url = format!("{}/{}.{}?{}&codec=264", base.trim_end_matches('/'), line.stream_name, ext, anti);
+            if ratio > 0 {
+                url.push_str(&format!("&ratio={}", ratio));
+            }
+            urls.push(url);
+        }
+
+        if urls.is_empty() {
+            return Err(MoovieError::DetailError("虎牙未获取到播放地址".to_string()));
+        }
+
+        urls.sort_by(|a, b| {
+            let a_is_m3u8 = a.contains(".m3u8");
+            let b_is_m3u8 = b.contains(".m3u8");
+            b_is_m3u8.cmp(&a_is_m3u8).then_with(|| a.cmp(b))
+        });
+        urls.dedup();
+
+        Ok(LivePlayUrl {
+            urls,
+            headers: Some(HashMap::from([(
+                "user-agent".to_string(),
+                Self::play_user_agent().to_string(),
+            )])),
+            url_type: Some("auto".to_string()),
+            expires_at: None,
+        })
     }
 }
-

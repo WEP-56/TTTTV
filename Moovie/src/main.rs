@@ -4,6 +4,7 @@ mod live;
 mod models;
 mod services;
 mod utils;
+mod proxy;
 
 use axum::{
     routing::{get, post},

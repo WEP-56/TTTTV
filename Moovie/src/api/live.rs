@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::core::AppState;
 use crate::live::models::{LivePlatformInfo, LivePlayQuality, LivePlayUrl, LiveRoomDetail, LiveRoomItem};
-use crate::live::providers::{LiveProvider, bilibili::BiliBiliProvider, douyu::DouyuProvider, huya::HuyaProvider};
+use crate::live::providers::{LiveProvider, bilibili::BiliBiliProvider, douyu::DouyuProvider, huya::HuyaProvider, douyin::DouyinProvider};
 use crate::live::danmaku;
 use crate::utils::error::MoovieError;
 use crate::utils::response::{ApiResponse, ApiResult};
@@ -28,6 +28,9 @@ pub fn router() -> Router<AppState> {
         .route("/:platform/room/play", get(get_play_urls))
         .route("/:platform/room/danmaku", get(danmaku_ws))
         .route("/proxy", get(proxy))
+        .route("/proxy/set_stream_url", get(set_stream_url))
+        .route("/proxy/start", get(start_proxy_endpoint))
+        .route("/proxy/stop", get(stop_proxy_endpoint))
         .nest("/history", super::live_history::router())
         .nest("/favorites", super::live_favorites::router())
         .nest("/auth", super::live_auth::router())
@@ -157,6 +160,18 @@ pub async fn danmaku_ws(
                 socket,
             )
             .await;
+        } else if platform == "douyu" {
+            let _ = danmaku::douyu::bridge(query.room_id, socket).await;
+        } else if platform == "huya" {
+            let provider = HuyaProvider::new(state.client.clone());
+            match provider.get_danmaku_args(&query.room_id).await {
+                Ok(args) => {
+                    let _ = danmaku::huya::bridge(args, socket).await;
+                }
+                Err(_) => {
+                    let _ = socket;
+                }
+            }
         } else {
             // For now, close immediately for unsupported platforms.
             let _ = socket;
@@ -177,9 +192,15 @@ fn build_provider(platform: &str, state: &AppState) -> Result<Box<dyn LiveProvid
         }
         "douyu" => Ok(Box::new(DouyuProvider::new(state.client.clone()))),
         "huya" => Ok(Box::new(HuyaProvider::new(state.client.clone()))),
-        "douyin" => Err(MoovieError::InvalidParameter(
-            "抖音直播开发中".to_string(),
-        )),
+        "douyin" => {
+            let cookie = state
+                .storage
+                .lock()
+                .unwrap()
+                .get_live_cookie("douyin")
+                .unwrap_or_default();
+            Ok(Box::new(DouyinProvider::new(state.client.clone(), cookie)))
+        }
         _ => Err(MoovieError::InvalidParameter("未知直播平台".to_string())),
     }
 }
@@ -268,12 +289,26 @@ fn platform_default_headers(platform: Option<&str>) -> HeaderMap {
             );
         }
         "huya" => {
+            // Huya streams are sensitive to UA; mimic HYSDK (from dart_simple_live).
+            headers.insert(
+                header::USER_AGENT,
+                header::HeaderValue::from_static(
+                    "HYSDK(Windows, 30000002)_APP(pc_exe&7060000&official)_SDK(trans&2.32.3.5646)",
+                ),
+            );
             headers.insert(
                 header::REFERER,
                 header::HeaderValue::from_static("https://www.huya.com/"),
             );
         }
         "douyin" => {
+            // Use a QQBrowser UA (from dart_simple_live) to avoid douyin quirks.
+            headers.insert(
+                header::USER_AGENT,
+                header::HeaderValue::from_static(
+                    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36 Core/1.116.567.400 QQBrowser/19.7.6764.400",
+                ),
+            );
             headers.insert(
                 header::REFERER,
                 header::HeaderValue::from_static("https://live.douyin.com/"),
@@ -385,4 +420,42 @@ fn make_proxy_url(platform: Option<&str>, abs: &Url) -> String {
         Some(p) if !p.is_empty() => format!("/api/live/proxy?platform={}&url={}", p, encoded),
         _ => format!("/api/live/proxy?url={}", encoded),
     }
+}
+
+#[derive(Deserialize)]
+pub struct SetStreamUrlQuery {
+    pub url: String,
+    pub platform: Option<String>,
+}
+
+pub async fn set_stream_url(
+    State(state): State<AppState>,
+    Query(query): Query<SetStreamUrlQuery>,
+) -> ApiResult<String> {
+    *state.stream_url_store.url.lock().unwrap() = query.url.clone();
+    *state.stream_url_store.platform.lock().unwrap() = query.platform.unwrap_or_default();
+    Ok(Json(ApiResponse::success(query.url)))
+}
+
+pub async fn start_proxy_endpoint(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<String>>, MoovieError> {
+    let proxy_url = crate::proxy::start_proxy(
+        state.proxy_server_handle.clone(),
+        state.stream_url_store.clone(),
+    )
+    .await
+    .map_err(|e| MoovieError::Unknown(e))?;
+
+    Ok(Json(ApiResponse::success(proxy_url)))
+}
+
+pub async fn stop_proxy_endpoint(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<()>>, MoovieError> {
+    crate::proxy::stop_proxy(state.proxy_server_handle.clone())
+        .await
+        .map_err(|e| MoovieError::Unknown(e))?;
+
+    Ok(Json(ApiResponse::success(())))
 }

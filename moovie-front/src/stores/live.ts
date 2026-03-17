@@ -89,7 +89,11 @@ export const useLiveStore = defineStore('live', () => {
   async function getPlay(platform: string, roomId: string, qualityId: string): Promise<LivePlayUrl | null> {
     try {
       const res = await apiClient.livePlay(platform, roomId, qualityId);
-      if (res.success && res.data) return res.data;
+      if (res.success && res.data) {
+        // 对于斗鱼和虎牙，保留所有线路URL，前端播放时动态设置代理
+        // 不在这里启动代理，而是在LiveRoomDialog中切换线路时设置
+        return res.data;
+      }
       return null;
     } catch (e) {
       console.error('获取播放地址失败:', e);

@@ -1,4 +1,7 @@
 use async_trait::async_trait;
+use md5::{Digest, Md5};
+use rquickjs::{Context, Runtime};
+use rquickjs::function::Func;
 use serde_json::Value;
 
 use crate::utils::error::{MoovieError, Result};
@@ -35,14 +38,158 @@ impl DouyuProvider {
     }
 
     fn random_hex(len: usize) -> String {
-        use rand::RngCore;
-        let mut bytes = vec![0u8; (len + 1) / 2];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        let mut out = String::with_capacity(len);
-        for b in bytes {
-            out.push_str(&format!("{:02x}", b));
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..len)
+            .map(|_| format!("{:x}", rng.gen_range(0..16)))
+            .collect()
+    }
+
+    fn html_unescape(input: &str) -> String {
+        input
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+    }
+
+    async fn get_home_h5_enc(&self, room_id: &str) -> Result<String> {
+        let json = self
+            .client
+            .get("https://www.douyu.com/swf_api/homeH5Enc")
+            .query(&[("rids", room_id)])
+            .header("user-agent", Self::user_agent())
+            .header("referer", format!("https://www.douyu.com/{}", room_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        if json["error"].as_i64().unwrap_or(0) != 0 {
+            return Err(MoovieError::DetailError(
+                json["msg"].as_str().unwrap_or("斗鱼签名脚本获取失败").to_string(),
+            ));
         }
-        out.truncate(len);
+
+        let key = format!("room{}", room_id);
+        let enc = json["data"][key].as_str().unwrap_or("").to_string();
+        if enc.trim().is_empty() {
+            return Err(MoovieError::DetailError("斗鱼签名脚本为空".to_string()));
+        }
+        Ok(enc)
+    }
+
+    fn compute_sign(&self, enc_js: &str, room_id: &str) -> Result<String> {
+        let rt = Runtime::new().map_err(|e| MoovieError::Unknown(e.to_string()))?;
+        let ctx = Context::full(&rt).map_err(|e| MoovieError::Unknown(e.to_string()))?;
+
+        let did = "10000000000000000000000000001501";
+        let tt = chrono::Utc::now().timestamp();
+
+        ctx.with(|ctx| {
+            let globals = ctx.globals();
+            globals
+                .set(
+                    "__moovie_md5",
+                    Func::from(|input: String| {
+                        let mut hasher = Md5::new();
+                        hasher.update(input.as_bytes());
+                        format!("{:x}", hasher.finalize())
+                    }),
+                )
+                .map_err(|e| MoovieError::Unknown(e.to_string()))?;
+
+            // Some enc scripts used to depend on CryptoJS.MD5. Provide a minimal stub.
+            ctx.eval::<(), _>(
+                r#"
+                var CryptoJS = {
+                  MD5: function(s){
+                    return { toString: function(){ return __moovie_md5(String(s)); } };
+                  }
+                };
+                "#,
+            )
+            .map_err(|e| MoovieError::Unknown(e.to_string()))?;
+
+            ctx.eval::<(), _>(enc_js)
+                .map_err(|e| MoovieError::Unknown(format!("斗鱼签名脚本执行失败: {}", e)))?;
+
+            let expr = format!("ub98484234('{}','{}','{}')", room_id, did, tt);
+            let sign: String = ctx
+                .eval::<String, _>(expr)
+                .map_err(|e| MoovieError::Unknown(format!("斗鱼签名计算失败: {}", e)))?;
+
+            if sign.trim().is_empty() {
+                return Err(MoovieError::DetailError("斗鱼签名为空".to_string()));
+            }
+            Ok(sign)
+        })
+    }
+
+    async fn post_h5_play(&self, room_id: &str, args: &str) -> Result<Value> {
+        let json = self
+            .client
+            .post(format!("https://www.douyu.com/lapi/live/getH5Play/{}", room_id))
+            .header("user-agent", Self::user_agent())
+            .header("referer", format!("https://www.douyu.com/{}", room_id))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(args.to_string())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        if json["error"].as_i64().unwrap_or(0) != 0 {
+            return Err(MoovieError::DetailError(
+                json["msg"].as_str().unwrap_or("斗鱼播放地址获取失败").to_string(),
+            ));
+        }
+        Ok(json)
+    }
+
+    fn parse_cdns(json: &Value) -> Vec<String> {
+        let mut cdns = Vec::new();
+        if let Some(arr) = json["data"]["cdnsWithName"].as_array() {
+            for item in arr {
+                let cdn = item["cdn"].as_str().unwrap_or("").trim().to_string();
+                if !cdn.is_empty() {
+                    cdns.push(cdn);
+                }
+            }
+        }
+
+        // put scdn at the end
+        cdns.sort_by(|a, b| {
+            let a_s = a.starts_with("scdn");
+            let b_s = b.starts_with("scdn");
+            a_s.cmp(&b_s)
+        });
+
+        cdns.dedup();
+        cdns
+    }
+
+    fn collect_play_urls(json: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        let data = &json["data"];
+
+        let rtmp_url = data["rtmp_url"].as_str().unwrap_or("").trim();
+        let rtmp_live = data["rtmp_live"].as_str().unwrap_or("").trim();
+
+        if !rtmp_url.is_empty() && !rtmp_live.is_empty() {
+            let live = Self::html_unescape(rtmp_live);
+            let base_url = if rtmp_url.ends_with('/') {
+                format!("{}{}", rtmp_url, live)
+            } else {
+                format!("{}/{}", rtmp_url, live)
+            };
+
+            // 只添加原始 URL，不生成变体
+            out.push(base_url);
+        }
+
+        out.dedup();
         out
     }
 }
@@ -224,15 +371,80 @@ impl LiveProvider for DouyuProvider {
         })
     }
 
-    async fn play_qualities(&self, _room_id: &str) -> Result<Vec<LivePlayQuality>> {
-        Err(MoovieError::InvalidParameter(
-            "斗鱼播放与画质选择开发中".to_string(),
-        ))
+    async fn play_qualities(&self, room_id: &str) -> Result<Vec<LivePlayQuality>> {
+        let detail = self.room_detail(room_id).await?;
+        if !detail.status {
+            return Err(MoovieError::InvalidParameter("直播间未开播".to_string()));
+        }
+
+        let enc_js = self.get_home_h5_enc(&detail.room_id).await?;
+        let sign = self.compute_sign(&enc_js, &detail.room_id)?;
+
+        let args = format!(
+            "{}&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0",
+            sign
+        );
+        let json = self.post_h5_play(&detail.room_id, &args).await?;
+
+        let mut qualities = Vec::new();
+        if let Some(arr) = json["data"]["multirates"].as_array() {
+            for item in arr {
+                let rate = item["rate"]
+                    .as_i64()
+                    .or_else(|| item["rate"].as_str().and_then(|s| s.parse().ok()))
+                    .unwrap_or(-1);
+                if rate < 0 {
+                    continue;
+                }
+                let name = item["name"].as_str().unwrap_or("未知清晰度").to_string();
+                qualities.push(LivePlayQuality {
+                    id: rate.to_string(),
+                    name,
+                    sort: rate as i32,
+                });
+            }
+        }
+
+        qualities.sort_by(|a, b| b.sort.cmp(&a.sort));
+        Ok(qualities)
     }
 
-    async fn play_urls(&self, _room_id: &str, _quality_id: &str) -> Result<LivePlayUrl> {
-        Err(MoovieError::InvalidParameter(
-            "斗鱼播放与画质选择开发中".to_string(),
-        ))
+    async fn play_urls(&self, room_id: &str, quality_id: &str) -> Result<LivePlayUrl> {
+        let detail = self.room_detail(room_id).await?;
+        if !detail.status {
+            return Err(MoovieError::InvalidParameter("直播间未开播".to_string()));
+        }
+
+        let enc_js = self.get_home_h5_enc(&detail.room_id).await?;
+        let sign = self.compute_sign(&enc_js, &detail.room_id)?;
+
+        // First request: get available cdns
+        let meta_args = format!(
+            "{}&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0",
+            sign
+        );
+        let meta = self.post_h5_play(&detail.room_id, &meta_args).await?;
+        let cdns = Self::parse_cdns(&meta);
+
+        let mut urls = Vec::new();
+        for cdn in cdns {
+            let args = format!(
+                "{}&cdn={}&rate={}&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0",
+                sign, cdn, quality_id
+            );
+            let json = self.post_h5_play(&detail.room_id, &args).await?;
+            urls.extend(Self::collect_play_urls(&json));
+        }
+
+        if urls.is_empty() {
+            return Err(MoovieError::DetailError("斗鱼未获取到播放地址".to_string()));
+        }
+
+        Ok(LivePlayUrl {
+            urls,
+            headers: None,
+            url_type: Some("auto".to_string()),
+            expires_at: None,
+        })
     }
 }

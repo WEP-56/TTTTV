@@ -78,7 +78,7 @@
 
       <div class="live-info">
         <div class="info-row">
-          <img :src="detail.user_avatar || placeholderAvatar" class="avatar" />
+          <img :src="getAvatarUrl(detail)" class="avatar" referrerpolicy="no-referrer" />
           <div class="info-main">
             <div class="anchor">{{ detail.user_name }}</div>
             <div class="meta">
@@ -232,7 +232,8 @@ async function refreshPlay() {
     }
     selectedQualityId.value = qid;
 
-    const play = await liveStore.getPlay(props.platform, detail.value.room_id, qid);
+    const roomIdToUse = detail.value.room_id;
+    const play = await liveStore.getPlay(props.platform, roomIdToUse, qid);
     playUrls.value = play?.urls || [];
     if (playUrls.value.length === 0) {
       ElMessage.error('未获取到播放地址');
@@ -245,13 +246,40 @@ async function refreshPlay() {
   }
 }
 
-function updateSrcFromLine() {
+async function updateSrcFromLine() {
   if (!detail.value) return;
   const url =
     playUrls.value.find((u, idx) => idx === selectedLineIndex.value && u.includes('.m3u8')) ||
     playUrls.value[selectedLineIndex.value] ||
     '';
-  currentSrc.value = url ? liveStore.toProxyUrl(props.platform, url) : '';
+
+  if (!url) {
+    currentSrc.value = '';
+    return;
+  }
+
+  // 斗鱼和虎牙需要通过本地代理服务器
+  if (props.platform === 'douyu' || props.platform === 'huya') {
+    try {
+      // 设置流URL并启动代理
+      await fetch(`http://127.0.0.1:5007/api/live/proxy/set_stream_url?url=${encodeURIComponent(url)}&platform=${encodeURIComponent(props.platform)}`);
+      const proxyRes = await fetch(`http://127.0.0.1:5007/api/live/proxy/start`);
+      const proxyData = await proxyRes.json();
+      if (proxyData.success && proxyData.data) {
+        currentSrc.value = proxyData.data;
+      } else {
+        ElMessage.error('启动代理失败');
+        currentSrc.value = '';
+      }
+    } catch (proxyErr) {
+      console.error('启动代理服务器失败:', proxyErr);
+      ElMessage.error('代理服务器连接失败');
+      currentSrc.value = '';
+    }
+  } else {
+    // 其他平台（B站、抖音）需要通过后端代理添加 headers
+    currentSrc.value = liveStore.toProxyUrl(props.platform, url);
+  }
 }
 
 async function toggleFavorite() {
@@ -327,6 +355,11 @@ function formatOnline(num: number) {
   if (!num) return '0';
   if (num >= 10000) return `${(num / 10000).toFixed(1)}万`;
   return String(num);
+}
+
+function getAvatarUrl(detail: LiveRoomDetail): string {
+  if (!detail.user_avatar) return placeholderAvatar;
+  return liveStore.toProxyUrl(detail.platform, detail.user_avatar);
 }
 </script>
 
