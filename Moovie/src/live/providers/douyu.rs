@@ -415,7 +415,8 @@ impl LiveProvider for DouyuProvider {
                 qualities.push(LivePlayQuality {
                     id: rate.to_string(),
                     name,
-                    sort: rate as i32,
+                    // Douyu uses rate=0 to represent the highest/original quality.
+                    sort: if rate == 0 { i32::MAX } else { rate as i32 },
                 });
             }
         }

@@ -370,7 +370,7 @@ fn rewrite_m3u8(content: &str, base: &Url, platform: Option<&str>) -> String {
             continue;
         }
 
-        let abs = resolve_m3u8_uri(base, line.trim());
+        let abs = resolve_m3u8_uri(base, line.trim(), platform);
         out.push_str(&make_proxy_url(platform, &abs));
         out.push('\n');
     }
@@ -398,7 +398,7 @@ fn rewrite_uri_attributes(line: &str, base: &Url, platform: Option<&str>) -> Str
         };
 
         let uri_str = &rest[..end_quote];
-        let abs = resolve_m3u8_uri(base, uri_str);
+        let abs = resolve_m3u8_uri(base, uri_str, platform);
         result.push_str(&make_proxy_url(platform, &abs));
 
         remaining = &rest[end_quote..];
@@ -407,11 +407,25 @@ fn rewrite_uri_attributes(line: &str, base: &Url, platform: Option<&str>) -> Str
     result
 }
 
-fn resolve_m3u8_uri(base: &Url, uri: &str) -> Url {
+fn resolve_m3u8_uri(base: &Url, uri: &str, platform: Option<&str>) -> Url {
     if let Ok(abs) = Url::parse(uri) {
         return abs;
     }
-    base.join(uri).unwrap_or_else(|_| base.clone())
+
+    let mut joined = base.join(uri).unwrap_or_else(|_| base.clone());
+
+    // Some platforms (notably Bilibili) embed access tokens in the playlist query string,
+    // but use relative URIs for segments/keys. Propagate the base query to joined URIs
+    // when the reference doesn't specify its own query.
+    if matches!(platform, Some("bilibili"))
+        && base.query().is_some()
+        && joined.query().is_none()
+        && !uri.contains('?')
+    {
+        joined.set_query(base.query());
+    }
+
+    joined
 }
 
 fn make_proxy_url(platform: Option<&str>, abs: &Url) -> String {

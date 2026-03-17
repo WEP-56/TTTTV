@@ -64,6 +64,35 @@ function load() {
     });
     hls.loadSource(props.src);
     hls.attachMedia(video);
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (!hls) return;
+      if (!data?.fatal) return;
+
+      switch (data.type) {
+        case Hls.ErrorTypes.NETWORK_ERROR: {
+          // Retry network load (e.g. fragment 404/timeout).
+          try {
+            hls.startLoad();
+          } catch {
+            // ignore
+          }
+          break;
+        }
+        case Hls.ErrorTypes.MEDIA_ERROR: {
+          try {
+            hls.recoverMediaError();
+          } catch {
+            // ignore
+          }
+          break;
+        }
+        default: {
+          // Fall back to full reload for unexpected fatal errors.
+          load();
+          break;
+        }
+      }
+    });
   } else if (props.src.includes('.flv') && flvjs.isSupported()) {
     flv = flvjs.createPlayer(
       {

@@ -29,6 +29,9 @@ let rafId: number | null = null;
 let ws: WebSocket | null = null;
 let resizeObs: ResizeObserver | null = null;
 let bullets: Bullet[] = [];
+let reconnectTimer: number | null = null;
+let reconnectAttempts = 0;
+let allowReconnect = true;
 
 let lastTs = 0;
 let trackIndex = 0;
@@ -56,9 +59,13 @@ function setupCanvasSize() {
 function connect() {
   if (!props.wsUrl) return;
   disconnect();
+  clearReconnectTimer();
 
   try {
     ws = new WebSocket(props.wsUrl);
+    ws.onopen = () => {
+      reconnectAttempts = 0;
+    };
     ws.onmessage = (event) => {
       try {
         const msg: LiveMessage = JSON.parse(event.data);
@@ -68,23 +75,53 @@ function connect() {
         // ignore
       }
     };
+    ws.onerror = () => {
+      scheduleReconnect();
+    };
     ws.onclose = () => {
       ws = null;
+      scheduleReconnect();
     };
   } catch {
     ws = null;
+    scheduleReconnect();
   }
 }
 
 function disconnect() {
+  clearReconnectTimer();
   if (ws) {
     try {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       ws.close();
     } catch {
       // ignore
     }
     ws = null;
   }
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer != null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect() {
+  if (!allowReconnect) return;
+  if (!props.wsUrl) return;
+  if (reconnectTimer != null) return;
+
+  const delay = Math.min(30000, Math.floor(1000 * Math.pow(1.8, reconnectAttempts)));
+  reconnectAttempts = Math.min(reconnectAttempts + 1, 10);
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
 }
 
 function enqueue(msg: LiveMessage) {
@@ -189,6 +226,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  allowReconnect = false;
   disconnect();
   stop();
   resizeObs?.disconnect();
@@ -202,4 +240,3 @@ onUnmounted(() => {
   height: 100%;
 }
 </style>
-
